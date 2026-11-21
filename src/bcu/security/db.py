@@ -111,6 +111,7 @@ KNOWN_VULNERABILITIES: List[Dict[str, Any]] = [
     {
         "id": "CVE-2024-32002",
         "app_match_names": ["git", "git for windows"],
+        "app_exclude_names": ["git lfs", "git credential", "git extensions", "github", "gitkraken", "tortoisegit"],
         "affected_range": "< 2.45.1",
         "fixed_version": "2.45.1",
         "severity": SeverityLevel.CRITICAL,
@@ -138,6 +139,7 @@ KNOWN_VULNERABILITIES: List[Dict[str, Any]] = [
     {
         "id": "CVE-2023-40217",
         "app_match_names": ["python 3", "python"],
+        "app_exclude_names": ["launcher", "documentation", "test suite", "pip bootstrap", "development libraries"],
         "affected_range": ">= 3.11.0, < 3.11.5",
         "fixed_version": "3.11.5",
         "severity": SeverityLevel.HIGH,
@@ -150,7 +152,8 @@ KNOWN_VULNERABILITIES: List[Dict[str, Any]] = [
     # Zoom
     {
         "id": "CVE-2024-24691",
-        "app_match_names": ["zoom", "zoom meetings"],
+        "app_match_names": ["zoom", "zoom meetings", "zoom workplace"],
+        "app_exclude_names": ["outlook", "plugin", "extension"],
         "affected_range": "< 5.16.5",
         "fixed_version": "5.16.5",
         "severity": SeverityLevel.CRITICAL,

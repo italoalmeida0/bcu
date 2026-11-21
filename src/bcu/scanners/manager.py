@@ -66,12 +66,12 @@ class ScannerManager:
         """Scans all sources concurrently, deduplicates, and enriches metadata with high-performance caching."""
         now = time.time()
 
-        # If using default system scanners and cache is valid, return cached entries instantly
+        # If using default system scanners and cache is valid, return a shallow copy so callers cannot mutate cache
         if not self._custom_scanners and not force_refresh:
             with self.__class__._cache_lock:
                 if self.__class__._cached_default_apps is not None:
                     if (now - self.__class__._cache_timestamp) < self.__class__.DEFAULT_CACHE_TTL_SEC:
-                        return self.__class__._cached_default_apps
+                        return list(self.__class__._cached_default_apps)
 
         all_entries: List[ApplicationEntry] = []
         available_scanners = [s for s in self.scanners if s.is_available()]
@@ -82,13 +82,14 @@ class ScannerManager:
             }
             for future in concurrent.futures.as_completed(future_to_scanner):
                 scanner = future_to_scanner[future]
-                if progress_callback:
-                    progress_callback(f"Scanning {scanner.name}...")
                 try:
                     entries = future.result()
                     all_entries.extend(entries)
+                    if progress_callback:
+                        progress_callback(f"Scanned {scanner.name} ({len(entries)} items)")
                 except Exception:
-                    pass
+                    if progress_callback:
+                        progress_callback(f"Skipped {scanner.name}")
 
         # Deduplicate & enrich entries
         deduplicated = self._deduplicate_entries(all_entries)
@@ -107,13 +108,31 @@ class ScannerManager:
 
         if not self._custom_scanners:
             with self.__class__._cache_lock:
-                self.__class__._cached_default_apps = deduplicated
+                self.__class__._cached_default_apps = list(deduplicated)
                 self.__class__._cache_timestamp = time.time()
 
         return deduplicated
 
+    @staticmethod
+    def _strip_scanner_suffix(name: str) -> str:
+        low = name.strip().lower()
+        for suffix in (
+            " (directory)",
+            " (winget)",
+            " (scoop)",
+            " (chocolatey)",
+            " (steam)",
+            " (store app)",
+            " (oculus)",
+            " (windows feature)",
+        ):
+            if low.endswith(suffix):
+                low = low[: -len(suffix)].strip()
+        return low
+
     def _deduplicate_entries(self, entries: List[ApplicationEntry]) -> List[ApplicationEntry]:
         """Deduplicates entries prioritizing Registry > StoreApp > Steam/PackageMgr > Directory."""
+        seen_ids = set()
         seen_names = set()
         seen_locations = set()
         unique: List[ApplicationEntry] = []
@@ -135,17 +154,29 @@ class ScannerManager:
 
         for entry in sorted_entries:
             norm_name = entry.display_name_trimmed.lower()
+            base_name = self._strip_scanner_suffix(norm_name)
             norm_loc = normalize_path(entry.install_location)
 
             if not norm_name:
                 continue
 
-            # Directory scanner items should not duplicate existing registry apps
+            # Guarantee globally unique IDs across all scanners (prevents DataTable DuplicateKey crashes)
+            if entry.id in seen_ids:
+                continue
+
+            # Directory scanner items should not duplicate existing registry/package apps
             if entry.source_scanner == "Directory":
-                if norm_name in seen_names or (norm_loc and norm_loc in seen_locations):
+                if (
+                    norm_name in seen_names
+                    or base_name in seen_names
+                    or (norm_loc and norm_loc in seen_locations)
+                ):
                     continue
 
+            seen_ids.add(entry.id)
             seen_names.add(norm_name)
+            if base_name:
+                seen_names.add(base_name)
             if norm_loc:
                 seen_locations.add(norm_loc)
             unique.append(entry)

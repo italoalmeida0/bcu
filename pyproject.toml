@@ -1,6 +1,6 @@
 [project]
 name = "bcu"
-version = "0.1.0"
+version = "0.2.0"
 description = "Bulk Crap Uninstaller (BCU) - Python CLI & AI Agent Port"
 readme = "README.md"
 authors = [

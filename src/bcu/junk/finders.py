@@ -7,14 +7,106 @@ from __future__ import annotations
 
 import csv
 import io
+import locale
 import os
 import subprocess
+import time
 from pathlib import Path
-from typing import List, Optional, Set
-from bcu.config import PROHIBITED_DIRECTORIES, PROHIBITED_REGISTRY_KEYS
+from typing import Dict, List, Optional, Set, Tuple
+from bcu.config import PROHIBITED_DIRECTORIES, PROHIBITED_REGISTRY_KEYS, PROHIBITED_SUBTREE_PREFIXES
+from bcu.enrichers.detector import extract_executable_path
 from bcu.junk.confidence import ConfidenceCalculator
 from bcu.models import ApplicationEntry, ConfidenceLevel, JunkItem, JunkType
-from bcu.utils.platform import IS_WINDOWS, RegistryHelper, normalize_path
+from bcu.utils.platform import IS_WINDOWS, SUBPROCESS_NO_WINDOW_FLAGS, RegistryHelper, normalize_path
+
+_GENERIC_EXE_STEMS = {
+    "uninstall",
+    "uninst",
+    "uninstaller",
+    "unins000",
+    "unins001",
+    "setup",
+    "install",
+    "installer",
+    "msiexec",
+    "cmd",
+    "powershell",
+    "explorer",
+    "rundll32",
+    "wscript",
+    "cscript",
+    "update",
+    "updater",
+    "launcher",
+    "helper",
+}
+
+_FINDER_CACHE_TTL_SEC = 30.0
+_schtasks_cache: Tuple[float, List[Tuple[str, str]]] = (0.0, [])
+_services_cache: Tuple[float, List[Tuple[str, str, str]]] = (0.0, [])
+_clsid_cache: Tuple[float, List[Tuple[str, str, str, str]]] = (0.0, [])
+
+
+def clear_finder_caches() -> None:
+    """Clears short-lived system snapshot caches used by deep junk finders."""
+    global _schtasks_cache, _services_cache, _clsid_cache
+    _schtasks_cache = (0.0, [])
+    _services_cache = (0.0, [])
+    _clsid_cache = (0.0, [])
+
+
+def _get_safe_install_location(app: ApplicationEntry) -> Optional[str]:
+    """
+    Returns a normalized lowercase install location ONLY if it is a specific, safe application directory.
+    Prevents broad system/parent directories (like C:\\Program Files\\) from matching unrelated items.
+    """
+    norm = normalize_path(app.install_location)
+    if not norm or len(norm) < 4:
+        return None
+    if norm in PROHIBITED_DIRECTORIES:
+        return None
+    if any(norm == pref or norm.startswith(pref + "\\") for pref in PROHIBITED_SUBTREE_PREFIXES):
+        return None
+    p = Path(norm)
+    if len(p.parts) <= 1 or p.parent == p:
+        return None
+    return norm
+
+
+def _path_contains_location(target_str: str, safe_loc: Optional[str]) -> bool:
+    """Checks whether target_str references safe_loc on a true path boundary."""
+    if not safe_loc or not target_str:
+        return False
+    norm_target = target_str.replace("/", "\\").lower()
+    idx = norm_target.find(safe_loc)
+    while idx != -1:
+        end_idx = idx + len(safe_loc)
+        # Ensure we didn't match in the middle of a folder name (e.g. \app matching \app2)
+        if end_idx == len(norm_target) or norm_target[end_idx] in ("\\", '"', "'", "|", ",", ";", " ", "\t"):
+            return True
+        idx = norm_target.find(safe_loc, idx + 1)
+    return False
+
+
+def _app_match_tokens(app: ApplicationEntry) -> Set[str]:
+    """Returns normalized alphanumeric tokens representing an application's clean name and exe stem."""
+    tokens: Set[str] = set()
+    clean = ConfidenceCalculator.clean_name(app.display_name_trimmed)
+    clean_alnum = "".join(c for c in clean if c.isalnum())
+    if len(clean_alnum) >= 4:
+        tokens.add(clean_alnum)
+
+    for raw_cmd in (app.uninstall_string, app.display_icon):
+        if not raw_cmd:
+            continue
+        cmd_clean = raw_cmd.rsplit(",", 1)[0] if "," in raw_cmd else raw_cmd
+        exe = extract_executable_path(cmd_clean)
+        if exe:
+            stem = Path(exe).stem.lower()
+            stem_alnum = "".join(c for c in stem if c.isalnum())
+            if len(stem_alnum) >= 4 and stem not in _GENERIC_EXE_STEMS:
+                tokens.add(stem_alnum)
+    return tokens
 
 
 class FileSystemJunkFinder:
@@ -55,29 +147,27 @@ class FileSystemJunkFinder:
         all_apps = all_apps or []
         results: List[JunkItem] = []
         search_dirs = cls.get_search_locations()
-        other_app_names = {
-            a.display_name_trimmed.lower()
-            for a in all_apps
-            if a.id != target_app.id and a.display_name_trimmed
-        }
+        other_app_names: Set[str] = set()
+        for a in all_apps:
+            if a.id != target_app.id and a.display_name_trimmed:
+                other_app_names.add(a.display_name_trimmed.lower())
+                clean_other = ConfidenceCalculator.clean_name(a.display_name_trimmed)
+                if clean_other:
+                    other_app_names.add(clean_other)
 
-        # 1. Target's own known install location (if it still exists after uninstall)
-        if target_app.install_location:
-            norm_loc = normalize_path(target_app.install_location)
-            if (
-                os.path.exists(target_app.install_location)
-                and norm_loc not in PROHIBITED_DIRECTORIES
-            ):
-                item = JunkItem(
-                    app_id=target_app.id,
-                    app_name=target_app.display_name_trimmed,
-                    junk_type=JunkType.DIRECTORY,
-                    path=target_app.install_location,
-                    confidence_level=ConfidenceLevel.VERY_GOOD,
-                    raw_score=15,
-                    reasons=["Target application original install directory remnant (+15)"],
-                )
-                results.append(item)
+        # 1. Target's own known install location (if it still exists after uninstall and is safe)
+        safe_loc = _get_safe_install_location(target_app)
+        if safe_loc and target_app.install_location and os.path.exists(target_app.install_location):
+            item = JunkItem(
+                app_id=target_app.id,
+                app_name=target_app.display_name_trimmed,
+                junk_type=JunkType.DIRECTORY,
+                path=target_app.install_location,
+                confidence_level=ConfidenceLevel.VERY_GOOD,
+                raw_score=15,
+                reasons=["Target application original install directory remnant (+15)"],
+            )
+            results.append(item)
 
         # 2. Search common folders
         for base_dir in search_dirs:
@@ -191,19 +281,21 @@ class RegistryJunkFinder:
             if a.id != target_app.id and a.display_name_trimmed
         }
 
-        # 1. Uninstaller Registry key itself
+        # 1. Uninstaller Registry key itself (only report if it actually exists)
         if target_app.registry_path:
-            results.append(
-                JunkItem(
-                    app_id=target_app.id,
-                    app_name=target_app.display_name_trimmed,
-                    junk_type=JunkType.REGISTRY_KEY,
-                    path=target_app.registry_path,
-                    confidence_level=ConfidenceLevel.VERY_GOOD,
-                    raw_score=20,
-                    reasons=["Application uninstaller registration key (+20)"],
+            r_hive, r_subpath = RegistryHelper.split_hive_and_subpath(target_app.registry_path)
+            if r_hive is not None and r_subpath and RegistryHelper.key_exists(r_hive, r_subpath, view_64=True):
+                results.append(
+                    JunkItem(
+                        app_id=target_app.id,
+                        app_name=target_app.display_name_trimmed,
+                        junk_type=JunkType.REGISTRY_KEY,
+                        path=target_app.registry_path,
+                        confidence_level=ConfidenceLevel.VERY_GOOD,
+                        raw_score=20,
+                        reasons=["Application uninstaller registration key (+20)"],
+                    )
                 )
-            )
 
         # 2. Search Software keys
         for hive_name, subpath in cls.REG_ROOTS:
@@ -347,7 +439,7 @@ class StartupJunkFinder:
 
         results: List[JunkItem] = []
         app_name = target_app.display_name_trimmed
-        loc = target_app.install_location.lower() if target_app.install_location else None
+        loc = _get_safe_install_location(target_app)
 
         # 1. Registry Run Keys
         for hive_name, subpath in cls.RUN_KEYS:
@@ -357,24 +449,25 @@ class StartupJunkFinder:
 
             values = RegistryHelper.read_key_values(hive, subpath, view_64=True)
             for val_name, val_data in values.items():
-                val_data_str = str(val_data).lower()
+                val_data_str = str(val_data)
 
                 # Check if value name or target executable path matches app
                 match_val_name = ConfidenceCalculator.match_string_to_product(target_app, val_name)
-                matched_by_path = loc and loc in val_data_str
+                matched_by_path = _path_contains_location(val_data_str, loc)
 
-                if match_val_name >= 0 or matched_by_path:
+                if matched_by_path or match_val_name in (0, 1):
                     reasons = ["Startup Run entry matches application (+8)"]
                     if matched_by_path:
                         reasons.append("Command path points directly into install directory (+10)")
+                    conf = ConfidenceLevel.VERY_GOOD if (matched_by_path or match_val_name == 0) else ConfidenceLevel.GOOD
                     results.append(
                         JunkItem(
                             app_id=target_app.id,
                             app_name=app_name,
                             junk_type=JunkType.STARTUP_ENTRY,
                             path=f"{hive_name}\\{subpath}\\{val_name}",
-                            confidence_level=ConfidenceLevel.VERY_GOOD,
-                            raw_score=10 if matched_by_path else 8,
+                            confidence_level=conf,
+                            raw_score=10 if matched_by_path else (8 if match_val_name == 0 else 5),
                             reasons=reasons,
                         )
                     )
@@ -390,15 +483,16 @@ class StartupJunkFinder:
                             if entry.is_file():
                                 stem = entry.stem
                                 match = ConfidenceCalculator.match_string_to_product(target_app, stem)
-                                if match >= 0:
+                                if match in (0, 1):
+                                    conf = ConfidenceLevel.VERY_GOOD if match == 0 else ConfidenceLevel.GOOD
                                     results.append(
                                         JunkItem(
                                             app_id=target_app.id,
                                             app_name=app_name,
                                             junk_type=JunkType.STARTUP_ENTRY,
                                             path=str(entry),
-                                            confidence_level=ConfidenceLevel.VERY_GOOD,
-                                            raw_score=8,
+                                            confidence_level=conf,
+                                            raw_score=8 if match == 0 else 5,
                                             reasons=["Startup folder item matches application name (+8)"],
                                         )
                                     )
@@ -412,13 +506,12 @@ class ServiceJunkFinder:
     """Finds leftover Windows Services associated with the target application."""
 
     @classmethod
-    def find_junk(cls, target_app: ApplicationEntry) -> List[JunkItem]:
-        if not IS_WINDOWS:
-            return []
-
-        results: List[JunkItem] = []
-        app_name = target_app.display_name_trimmed
-        loc = target_app.install_location.lower() if target_app.install_location else None
+    def _get_services_snapshot(cls) -> List[Tuple[str, str, str]]:
+        global _services_cache
+        now = time.time()
+        ts, cached = _services_cache
+        if cached and (now - ts) < _FINDER_CACHE_TTL_SEC:
+            return cached
 
         hive = RegistryHelper.HIVE_MAP.get("HKLM")
         if not hive:
@@ -426,19 +519,30 @@ class ServiceJunkFinder:
 
         services_path = r"SYSTEM\CurrentControlSet\Services"
         subkeys = RegistryHelper.enum_subkeys(hive, services_path, view_64=True)
-
+        snapshot: List[Tuple[str, str, str]] = []
         for service_key_name in subkeys:
             if service_key_name.lower() in PROHIBITED_REGISTRY_KEYS:
                 continue
-
-            full_service_path = f"{services_path}\\{service_key_name}"
-            vals = RegistryHelper.read_key_values(hive, full_service_path, view_64=True)
-
-            image_path = str(vals.get("ImagePath", "")).lower()
+            vals = RegistryHelper.read_key_values(hive, f"{services_path}\\{service_key_name}", view_64=True)
+            image_path = str(vals.get("ImagePath", ""))
             display_name = str(vals.get("DisplayName", "")).strip()
+            snapshot.append((service_key_name, image_path, display_name))
 
+        _services_cache = (now, snapshot)
+        return snapshot
+
+    @classmethod
+    def find_junk(cls, target_app: ApplicationEntry) -> List[JunkItem]:
+        if not IS_WINDOWS:
+            return []
+
+        results: List[JunkItem] = []
+        app_name = target_app.display_name_trimmed
+        loc = _get_safe_install_location(target_app)
+
+        for service_key_name, image_path, display_name in cls._get_services_snapshot():
             # Check if ImagePath points to application install location
-            matched_by_image_path = bool(loc and loc in image_path)
+            matched_by_image_path = _path_contains_location(image_path, loc)
             match_disp_name = (
                 ConfidenceCalculator.match_string_to_product(target_app, display_name)
                 if display_name
@@ -446,19 +550,25 @@ class ServiceJunkFinder:
             )
             match_key_name = ConfidenceCalculator.match_string_to_product(target_app, service_key_name)
 
-            if matched_by_image_path or match_disp_name >= 0 or match_key_name >= 0:
+            best_name_match = min(
+                (m for m in (match_disp_name, match_key_name) if m >= 0),
+                default=-1,
+            )
+
+            if matched_by_image_path or best_name_match in (0, 1):
                 reasons = [f"Windows Service '{service_key_name}' matches application (+12)"]
                 if matched_by_image_path:
                     reasons.append("Service ImagePath binary points to application directory (+15)")
 
-                score = 15 if matched_by_image_path else 10
+                conf = ConfidenceLevel.VERY_GOOD if (matched_by_image_path or best_name_match == 0) else ConfidenceLevel.GOOD
+                score = 15 if matched_by_image_path else (10 if best_name_match == 0 else 6)
                 results.append(
                     JunkItem(
                         app_id=target_app.id,
                         app_name=app_name,
                         junk_type=JunkType.SERVICE,
                         path=service_key_name,
-                        confidence_level=ConfidenceLevel.VERY_GOOD,
+                        confidence_level=conf,
                         raw_score=score,
                         reasons=reasons,
                     )
@@ -471,62 +581,80 @@ class ScheduledTaskJunkFinder:
     """Finds leftover Windows Scheduled Tasks associated with the application."""
 
     @classmethod
+    def _get_tasks_snapshot(cls) -> List[Tuple[str, str]]:
+        global _schtasks_cache
+        now = time.time()
+        ts, cached = _schtasks_cache
+        if cached and (now - ts) < _FINDER_CACHE_TTL_SEC:
+            return cached
+
+        rows: List[Tuple[str, str]] = []
+        try:
+            cmd = ["schtasks.exe", "/Query", "/FO", "CSV", "/V", "/NH"]
+            enc = locale.getpreferredencoding(False) or "utf-8"
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=15,
+                encoding=enc,
+                errors="replace",
+                creationflags=SUBPROCESS_NO_WINDOW_FLAGS,
+            )
+            if proc.returncode != 0 or not proc.stdout:
+                return []
+
+            seen_tasks: Set[str] = set()
+            reader = csv.reader(io.StringIO(proc.stdout))
+            for row in reader:
+                if len(row) < 9:
+                    continue
+                task_name = row[1].strip()
+                task_to_run = row[8].strip()
+                if not task_name or task_name.startswith("\\Microsoft\\Windows\\"):
+                    continue
+                if task_name.lower() in seen_tasks:
+                    continue
+                seen_tasks.add(task_name.lower())
+                rows.append((task_name, task_to_run))
+        except Exception:
+            return []
+
+        _schtasks_cache = (now, rows)
+        return rows
+
+    @classmethod
     def find_junk(cls, target_app: ApplicationEntry) -> List[JunkItem]:
         if not IS_WINDOWS:
             return []
 
         results: List[JunkItem] = []
         app_name = target_app.display_name_trimmed
-        loc = target_app.install_location.lower() if target_app.install_location else None
+        loc = _get_safe_install_location(target_app)
 
-        try:
-            cmd = ["schtasks.exe", "/Query", "/FO", "CSV", "/V", "/NH"]
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=15,
-                encoding="utf-8",
-                errors="replace",
-            )
-            if proc.returncode != 0 or not proc.stdout:
-                return []
+        for task_name, task_to_run in cls._get_tasks_snapshot():
+            clean_task_name = task_name.lstrip("\\")
+            matched_by_path = _path_contains_location(task_to_run, loc)
+            match_name = ConfidenceCalculator.match_string_to_product(target_app, clean_task_name)
 
-            reader = csv.reader(io.StringIO(proc.stdout))
-            for row in reader:
-                if len(row) < 9:
-                    continue
+            if matched_by_path or match_name in (0, 1):
+                reasons = [f"Scheduled Task '{task_name}' matches application (+10)"]
+                if matched_by_path:
+                    reasons.append("Task command executable is inside application directory (+12)")
 
-                task_name = row[1].strip() if len(row) > 1 else ""
-                task_to_run = row[8].strip().lower() if len(row) > 8 else ""
-
-                # Ignore default Windows core tasks
-                if task_name.startswith("\\Microsoft\\Windows\\"):
-                    continue
-
-                clean_task_name = task_name.lstrip("\\")
-                matched_by_path = loc and loc in task_to_run
-                match_name = ConfidenceCalculator.match_string_to_product(target_app, clean_task_name)
-
-                if matched_by_path or match_name >= 0:
-                    reasons = [f"Scheduled Task '{task_name}' matches application (+10)"]
-                    if matched_by_path:
-                        reasons.append("Task command executable is inside application directory (+12)")
-
-                    score = 12 if matched_by_path else 9
-                    results.append(
-                        JunkItem(
-                            app_id=target_app.id,
-                            app_name=app_name,
-                            junk_type=JunkType.SCHEDULED_TASK,
-                            path=task_name,
-                            confidence_level=ConfidenceLevel.VERY_GOOD,
-                            raw_score=score,
-                            reasons=reasons,
-                        )
+                conf = ConfidenceLevel.VERY_GOOD if (matched_by_path or match_name == 0) else ConfidenceLevel.GOOD
+                score = 12 if matched_by_path else (9 if match_name == 0 else 5)
+                results.append(
+                    JunkItem(
+                        app_id=target_app.id,
+                        app_name=app_name,
+                        junk_type=JunkType.SCHEDULED_TASK,
+                        path=task_name,
+                        confidence_level=conf,
+                        raw_score=score,
+                        reasons=reasons,
                     )
-        except Exception:
-            pass
+                )
 
         return results
 
@@ -540,7 +668,7 @@ class FirewallRuleJunkFinder:
             return []
 
         results: List[JunkItem] = []
-        loc = target_app.install_location.lower() if target_app.install_location else None
+        loc = _get_safe_install_location(target_app)
         if not loc:
             return []
 
@@ -552,8 +680,8 @@ class FirewallRuleJunkFinder:
         values = RegistryHelper.read_key_values(hive, fw_path, view_64=True)
 
         for rule_id, rule_data in values.items():
-            rule_str = str(rule_data).lower()
-            if loc in rule_str or f"|app={loc}" in rule_str:
+            rule_str = str(rule_data)
+            if _path_contains_location(rule_str, loc):
                 results.append(
                     JunkItem(
                         app_id=target_app.id,
@@ -579,7 +707,7 @@ class AppPathsJunkFinder:
 
         results: List[JunkItem] = []
         app_name = target_app.display_name_trimmed
-        loc = target_app.install_location.lower() if target_app.install_location else None
+        loc = _get_safe_install_location(target_app)
 
         for hive_name in ["HKLM", "HKCU"]:
             hive = RegistryHelper.HIVE_MAP.get(hive_name)
@@ -591,21 +719,22 @@ class AppPathsJunkFinder:
 
             for key in subkeys:
                 full_path = f"{app_paths}\\{key}"
-                vals = RegistryHelper.read_key_values(hive, full_path, view_64=True)
-                default_val = str(vals.get("", "")).lower()
+                default_val = str(RegistryHelper.read_default_value(hive, full_path, view_64=True) or "")
 
-                matched_by_path = loc and loc in default_val
-                match_name = ConfidenceCalculator.match_string_to_product(target_app, key.replace(".exe", ""))
+                matched_by_path = _path_contains_location(default_val, loc)
+                exe_stem = Path(key).stem
+                match_name = ConfidenceCalculator.match_string_to_product(target_app, exe_stem)
 
-                if matched_by_path or match_name >= 0:
+                if matched_by_path or match_name in (0, 1):
+                    conf = ConfidenceLevel.VERY_GOOD if (matched_by_path or match_name == 0) else ConfidenceLevel.GOOD
                     results.append(
                         JunkItem(
                             app_id=target_app.id,
                             app_name=app_name,
                             junk_type=JunkType.APP_PATH,
                             path=f"{hive_name}\\{full_path}",
-                            confidence_level=ConfidenceLevel.VERY_GOOD,
-                            raw_score=10,
+                            confidence_level=conf,
+                            raw_score=10 if (matched_by_path or match_name == 0) else 6,
                             reasons=["App Paths registration matches application (+10)"],
                         )
                     )
@@ -632,15 +761,15 @@ class UserProfileDotfolderFinder:
                 if item.is_dir() and item.name.startswith("."):
                     folder_name = item.name.lstrip(".")
                     match = ConfidenceCalculator.match_string_to_product(target_app, folder_name)
-                    if match >= 0:
+                    if match in (0, 1):
                         results.append(
                             JunkItem(
                                 app_id=target_app.id,
                                 app_name=target_app.display_name_trimmed,
                                 junk_type=JunkType.DIRECTORY,
                                 path=str(item),
-                                confidence_level=ConfidenceLevel.VERY_GOOD if match <= 1 else ConfidenceLevel.GOOD,
-                                raw_score=8,
+                                confidence_level=ConfidenceLevel.VERY_GOOD if match == 0 else ConfidenceLevel.GOOD,
+                                raw_score=8 if match == 0 else 5,
                                 reasons=[f"User profile configuration dotfolder '~/{item.name}' (+8)"],
                             )
                         )
@@ -660,45 +789,57 @@ class ComClsidJunkFinder:
     ]
 
     @classmethod
+    def _get_clsid_snapshot(cls) -> List[Tuple[str, str, str, str]]:
+        global _clsid_cache
+        now = time.time()
+        ts, cached = _clsid_cache
+        if cached and (now - ts) < _FINDER_CACHE_TTL_SEC:
+            return cached
+
+        snapshot: List[Tuple[str, str, str, str]] = []
+        for hive_name, subpath in cls.CLSID_PATHS:
+            hive = RegistryHelper.HIVE_MAP.get(hive_name)
+            if not hive:
+                continue
+            try:
+                clsids = RegistryHelper.enum_subkeys(hive, subpath, view_64=True)
+                for clsid in clsids:
+                    for server_key in ("InprocServer32", "LocalServer32"):
+                        val = RegistryHelper.read_default_value(hive, f"{subpath}\\{clsid}\\{server_key}", view_64=True)
+                        if val:
+                            snapshot.append((hive_name, f"{subpath}\\{clsid}", server_key, str(val)))
+                            break
+            except Exception:
+                continue
+
+        _clsid_cache = (now, snapshot)
+        return snapshot
+
+    @classmethod
     def find_junk(cls, target_app: ApplicationEntry) -> List[JunkItem]:
         if not IS_WINDOWS:
             return []
 
         results: List[JunkItem] = []
-        loc = target_app.install_location.lower() if target_app.install_location else None
-        if not loc or len(loc) < 4:
+        loc = _get_safe_install_location(target_app)
+        if not loc:
             return results
 
         app_name = target_app.display_name_trimmed
 
-        for hive_name, subpath in cls.CLSID_PATHS:
-            hive = RegistryHelper.HIVE_MAP.get(hive_name)
-            if not hive:
-                continue
-
-            try:
-                clsids = RegistryHelper.enum_subkeys(hive, subpath, view_64=True)
-                for clsid in clsids:
-                    for server_key in ["InprocServer32", "LocalServer32"]:
-                        server_path = f"{subpath}\\{clsid}\\{server_key}"
-                        vals = RegistryHelper.read_key_values(hive, server_path, view_64=True)
-                        server_binary = str(vals.get("", "")).lower()
-
-                        if loc in server_binary:
-                            results.append(
-                                JunkItem(
-                                    app_id=target_app.id,
-                                    app_name=app_name,
-                                    junk_type=JunkType.COM_CLSID,
-                                    path=f"{hive_name}\\{subpath}\\{clsid}",
-                                    confidence_level=ConfidenceLevel.VERY_GOOD,
-                                    raw_score=12,
-                                    reasons=[f"COM {server_key} points to application install directory (+12)"],
-                                )
-                            )
-                            break
-            except Exception:
-                continue
+        for hive_name, clsid_subpath, server_key, server_binary in cls._get_clsid_snapshot():
+            if _path_contains_location(server_binary, loc):
+                results.append(
+                    JunkItem(
+                        app_id=target_app.id,
+                        app_name=app_name,
+                        junk_type=JunkType.COM_CLSID,
+                        path=f"{hive_name}\\{clsid_subpath}",
+                        confidence_level=ConfidenceLevel.VERY_GOOD,
+                        raw_score=12,
+                        reasons=[f"COM {server_key} points to application install directory (+12)"],
+                    )
+                )
 
         return results
 
@@ -718,8 +859,8 @@ class AppCompatJunkFinder:
             return []
 
         results: List[JunkItem] = []
-        loc = target_app.install_location.lower() if target_app.install_location else None
-        if not loc or len(loc) < 4:
+        loc = _get_safe_install_location(target_app)
+        if not loc:
             return results
 
         app_name = target_app.display_name_trimmed
@@ -731,7 +872,7 @@ class AppCompatJunkFinder:
 
             vals = RegistryHelper.read_key_values(hive, subpath, view_64=True)
             for val_name in vals.keys():
-                if loc in val_name.lower():
+                if _path_contains_location(val_name, loc):
                     results.append(
                         JunkItem(
                             app_id=target_app.id,
@@ -758,8 +899,8 @@ class WerCrashDumpJunkFinder:
             return results
 
         app_name = target_app.display_name_trimmed
-        app_name_clean = "".join(c for c in app_name.lower() if c.isalnum())
-        if len(app_name_clean) < 3:
+        tokens = _app_match_tokens(target_app)
+        if not tokens:
             return results
 
         # 1. CrashDumps folder
@@ -768,7 +909,7 @@ class WerCrashDumpJunkFinder:
             try:
                 for dump_file in crash_dumps_dir.glob("*.dmp"):
                     stem_clean = "".join(c for c in dump_file.stem.lower() if c.isalnum())
-                    if app_name_clean in stem_clean:
+                    if any(tok in stem_clean for tok in tokens):
                         results.append(
                             JunkItem(
                                 app_id=target_app.id,
@@ -791,7 +932,7 @@ class WerCrashDumpJunkFinder:
                     for report_folder in wer_dir.iterdir():
                         if report_folder.is_dir():
                             clean_folder = "".join(c for c in report_folder.name.lower() if c.isalnum())
-                            if app_name_clean in clean_folder:
+                            if any(tok in clean_folder for tok in tokens):
                                 results.append(
                                     JunkItem(
                                         app_id=target_app.id,
@@ -823,14 +964,16 @@ class PrefetchJunkFinder:
             return results
 
         app_name = target_app.display_name_trimmed
-        app_name_clean = "".join(c for c in app_name.lower() if c.isalnum())
-        if len(app_name_clean) < 3:
+        tokens = _app_match_tokens(target_app)
+        if not tokens:
             return results
 
         try:
             for pf_file in prefetch_dir.glob("*.pf"):
-                stem_clean = "".join(c for c in pf_file.stem.lower() if c.isalnum())
-                if app_name_clean in stem_clean:
+                # Prefetch files look like "NOTEPAD++.EXE-8B3F21A9.pf"; match against exe name prefix before '-'
+                pf_exe_part = pf_file.stem.rsplit("-", 1)[0]
+                stem_clean = "".join(c for c in pf_exe_part.lower() if c.isalnum())
+                if any(tok in stem_clean for tok in tokens):
                     results.append(
                         JunkItem(
                             app_id=target_app.id,
@@ -859,8 +1002,8 @@ class AudioPolicyJunkFinder:
             return []
 
         results: List[JunkItem] = []
-        loc = target_app.install_location.lower() if target_app.install_location else None
-        if not loc or len(loc) < 4:
+        loc = _get_safe_install_location(target_app)
+        if not loc:
             return results
 
         hive = RegistryHelper.HIVE_MAP.get("HKCU")
@@ -873,7 +1016,7 @@ class AudioPolicyJunkFinder:
                 full_path = f"{cls.AUDIO_POLICY_PATH}\\{subkey}"
                 vals = RegistryHelper.read_key_values(hive, full_path, view_64=True)
                 for val_data in vals.values():
-                    if loc in str(val_data).lower():
+                    if _path_contains_location(str(val_data), loc):
                         results.append(
                             JunkItem(
                                 app_id=target_app.id,

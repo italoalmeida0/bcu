@@ -17,7 +17,6 @@ UNINSTALLER_EXE_NAMES = {
     "uninstaller.exe",
     "unins000.exe",
     "unins001.exe",
-    "setup.exe",
 }
 
 
@@ -47,6 +46,7 @@ class DirectoryScanner(BaseScanner):
         # Fast directory scan
         entries: List[ApplicationEntry] = []
         seen_paths: Set[str] = set()
+        seen_ids: Set[str] = set()
 
         for root in self._get_search_roots():
             try:
@@ -54,7 +54,7 @@ class DirectoryScanner(BaseScanner):
                     if not item.is_dir() or item.name.startswith((".", "$")):
                         continue
 
-                    # Look for uninstaller executables in top level or 1 subfolder
+                    # Look for uninstaller executables in top level
                     found_uninstaller = None
                     try:
                         for child in item.iterdir():
@@ -67,12 +67,17 @@ class DirectoryScanner(BaseScanner):
                     except (PermissionError, OSError):
                         continue
 
-                    if found_uninstaller and str(item) not in seen_paths:
-                        seen_paths.add(str(item))
+                    norm_item = str(item).lower()
+                    if found_uninstaller and norm_item not in seen_paths:
+                        seen_paths.add(norm_item)
                         clean_name = item.name.replace("_", " ").title()
+                        app_id = f"dir:{item.name}".lower()
+                        if app_id in seen_ids:
+                            app_id = f"dir:{root.name}:{item.name}".lower()
+                        seen_ids.add(app_id)
 
                         entry = ApplicationEntry(
-                            id=f"dir:{item.name}".lower(),
+                            id=app_id,
                             display_name=f"{clean_name} (Directory)",
                             install_location=str(item),
                             uninstall_string=f'"{found_uninstaller}"',

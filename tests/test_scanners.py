@@ -91,3 +91,60 @@ def test_oculus_scanner_available(monkeypatch):
     scanner = OculusScanner()
     monkeypatch.setattr(scanner, "is_available", lambda: False)
     assert scanner.scan() == []
+
+
+def test_winget_parser_unbroken_separator_and_localization():
+    from bcu.scanners.package_mgr import WingetScanner
+
+    sample_stdout = (
+        "   - \r   \\ \rNome                        Id                                      Versão      Disponível  Origem\n"
+        "---------------------------------------------------------------------------------------------------\n"
+        "Affinity                    Canva.Affinity                          3.2.3       3.3.3       winget\n"
+        "Android Studio              ARP\\Machine\\Arm64\\Android Studio        2025.3\n"
+        "AutoHotkey                  AutoHotkey.AutoHotkey                   2.0.26      2.0.32      winget\n"
+        "AV1 Extension               MSIX\\Microsoft.AV1_1.0_arm64__abc       1.0\n"
+    )
+    apps = WingetScanner.parse_winget_output(sample_stdout)
+    assert len(apps) == 2
+    assert {a.id for a in apps} == {"winget:canva.affinity", "winget:autohotkey.autohotkey"}
+    assert "--exact" in (apps[0].quiet_uninstall_string or "")
+
+
+def test_windows_update_datetime_dict(monkeypatch):
+    from bcu.scanners.win_update import WindowsUpdateScanner
+    scanner = WindowsUpdateScanner()
+    mock_json = '[{"HotFixID": "KB5099999", "Description": "Update", "InstalledOn": {"value": "/Date(1792537200000)/", "DateTime": "2026-10-21"}, "InstalledBy": "SYSTEM"}]'
+    monkeypatch.setattr(
+        "bcu.scanners.win_update.run_powershell_command",
+        lambda cmd, timeout_sec: (0, mock_json, ""),
+    )
+    monkeypatch.setattr(scanner, "is_available", lambda: True)
+    apps = scanner.scan()
+    assert len(apps) == 1
+    assert apps[0].install_date == "2026-10-21"
+
+
+def test_scanner_manager_dedup_directory_and_unique_ids():
+    mgr = ScannerManager(scanners=[])
+    entries = [
+        ApplicationEntry(
+            id="reg:hklm:notepad++",
+            display_name="Notepad++",
+            install_location=r"C:\Program Files\Notepad++",
+            source_scanner="Registry",
+        ),
+        ApplicationEntry(
+            id="dir:notepad++",
+            display_name="Notepad++ (Directory)",
+            install_location=r"C:\Program Files\Notepad++",
+            source_scanner="Directory",
+        ),
+        ApplicationEntry(
+            id="reg:hklm:notepad++",
+            display_name="Duplicate ID Entry",
+            source_scanner="Registry",
+        ),
+    ]
+    deduped = mgr._deduplicate_entries(entries)
+    assert len(deduped) == 1
+    assert deduped[0].id == "reg:hklm:notepad++"

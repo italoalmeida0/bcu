@@ -28,11 +28,13 @@ class WindowsUpdateScanner(BaseScanner):
 
         entries: List[ApplicationEntry] = []
         ps_cmd = (
-            "Get-HotFix | "
-            "Select-Object HotFixID, Description, InstalledOn, InstalledBy | "
+            "Get-CimInstance Win32_QuickFixEngineering | "
+            "Select-Object HotFixID, Description, "
+            "@{Name='InstalledOn';Expression={if($_.InstalledOn){$_.InstalledOn.ToString('yyyy-MM-dd')}else{''}}}, "
+            "InstalledBy | "
             "ConvertTo-Json -Compress"
         )
-        code, stdout, _ = run_powershell_command(ps_cmd, timeout_sec=25)
+        code, stdout, _ = run_powershell_command(ps_cmd, timeout_sec=20)
         if code != 0 or not stdout:
             return []
 
@@ -49,7 +51,11 @@ class WindowsUpdateScanner(BaseScanner):
                 continue
 
             desc = item.get("Description") or "Update"
-            installed_on = str(item.get("InstalledOn") or "")
+            raw_installed = item.get("InstalledOn")
+            if isinstance(raw_installed, dict):
+                installed_on = str(raw_installed.get("DateTime") or "")
+            else:
+                installed_on = str(raw_installed or "").strip()
             kb_number = hotfix_id.upper().replace("KB", "")
 
             entry = ApplicationEntry(

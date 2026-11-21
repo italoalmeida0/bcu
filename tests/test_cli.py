@@ -82,3 +82,21 @@ def test_cli_clean_junk_dry_run():
     runner = CliRunner()
     res = runner.invoke(main, ["clean-junk", "NonExistentApp", "--dry-run", "--json"])
     assert res.exit_code == 0
+
+
+def test_cli_parse_size_str():
+    from bcu.cli import parse_size_str
+
+    assert parse_size_str("100B") == 100
+    assert parse_size_str("2KB") == 2048
+    assert parse_size_str("5MB") == 5 * 1024 * 1024
+    assert parse_size_str("1.5GB") == int(1.5 * 1024 * 1024 * 1024)
+    assert parse_size_str("1TB") == 1024 * 1024 * 1024 * 1024
+    assert parse_size_str("invalid") is None
+
+
+def test_cli_ai_helper_no_json():
+    runner = CliRunner()
+    res = runner.invoke(main, ["ai-helper", "--no-json"])
+    assert res.exit_code == 0
+    assert "total_installed_apps" in res.output

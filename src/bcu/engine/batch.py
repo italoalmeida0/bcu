@@ -32,8 +32,10 @@ class BatchUninstallQueue:
         create_restore_point: bool = False,
         junk_min_confidence: ConfidenceLevel = ConfidenceLevel.GOOD,
         timeout_sec: int = 300,
+        all_apps: Optional[List[ApplicationEntry]] = None,
     ):
         self.apps = apps
+        self.all_apps = all_apps
         self.prefer_quiet = prefer_quiet
         self.dry_run = dry_run
         self.clean_junk = clean_junk
@@ -79,6 +81,7 @@ class BatchUninstallQueue:
                 junk_min_confidence=self.junk_min_confidence,
                 timeout_sec=self.timeout_sec,
                 progress_callback=on_progress,
+                all_apps=self.all_apps,
             )
 
             self.results.append(result)

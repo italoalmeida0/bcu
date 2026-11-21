@@ -57,3 +57,28 @@ def test_verify_authenticode_signature_mock(monkeypatch, tmp_path):
     is_valid, signer = verify_authenticode_signature(str(dummy_exe))
     assert is_valid is True
     assert "Microsoft" in signer
+
+    # Also verify PowerShell 5.1 integer enum Status == 0 ("Valid")
+    mock_int_json = '{"Status": 0, "Signer": "CN=Microsoft Windows"}'
+    monkeypatch.setattr(
+        "bcu.utils.platform.run_powershell_command",
+        lambda cmd, timeout_sec: (0, mock_int_json, ""),
+    )
+    is_valid2, signer2 = verify_authenticode_signature(str(dummy_exe))
+    assert is_valid2 is True
+    assert signer2 == "CN=Microsoft Windows"
+
+
+def test_delete_path_permanent_readonly_file(tmp_path):
+    import os
+    import stat
+
+    ro_dir = tmp_path / "ro_dir"
+    ro_dir.mkdir()
+    ro_file = ro_dir / "locked.txt"
+    ro_file.write_text("readonly", encoding="utf-8")
+    os.chmod(ro_file, stat.S_IREAD)
+
+    ok, _ = delete_path_permanent(str(ro_dir))
+    assert ok is True
+    assert not ro_dir.exists()

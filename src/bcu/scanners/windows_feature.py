@@ -27,13 +27,14 @@ class WindowsFeatureScanner(BaseScanner):
             return []
 
         entries: List[ApplicationEntry] = []
+        # Win32_OptionalFeature via CIM works cleanly both elevated and non-elevated and is much faster than DISM
         ps_cmd = (
-            "Get-WindowsOptionalFeature -Online | "
-            "Where-Object { $_.State -eq 'Enabled' } | "
-            "Select-Object FeatureName, State, Description | "
+            "Get-CimInstance Win32_OptionalFeature -Filter 'InstallState=1' | "
+            "Select-Object @{Name='FeatureName';Expression={$_.Name}}, Caption, Description, "
+            "@{Name='State';Expression={'Enabled'}} | "
             "ConvertTo-Json -Compress"
         )
-        code, stdout, _ = run_powershell_command(ps_cmd, timeout_sec=30)
+        code, stdout, _ = run_powershell_command(ps_cmd, timeout_sec=20)
         if code != 0 or not stdout:
             return []
 
@@ -45,12 +46,12 @@ class WindowsFeatureScanner(BaseScanner):
             return []
 
         for item in data:
-            feature_name = item.get("FeatureName")
+            feature_name = item.get("FeatureName") or item.get("Name")
             if not feature_name:
                 continue
 
-            desc = item.get("Description") or ""
-            clean_display = feature_name.replace("-", " ").replace("_", " ")
+            desc = item.get("Description") or item.get("Caption") or ""
+            clean_display = item.get("Caption") or feature_name.replace("-", " ").replace("_", " ")
 
             entry = ApplicationEntry(
                 id=f"feature:{feature_name}".lower(),
@@ -66,7 +67,7 @@ class WindowsFeatureScanner(BaseScanner):
                 raw_metadata={
                     "IsWindowsFeature": True,
                     "FeatureName": feature_name,
-                    "State": item.get("State"),
+                    "State": item.get("State") or "Enabled",
                 },
             )
             entries.append(entry)

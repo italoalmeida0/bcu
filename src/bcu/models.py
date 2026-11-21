@@ -50,37 +50,50 @@ class ConfidenceLevel(str, enum.Enum):
         }
         return ranks.get(self, 0)
 
-    def __ge__(self, other: ConfidenceLevel | str) -> bool:
-        if isinstance(other, str):
-            try:
-                other = ConfidenceLevel(other)
-            except ValueError:
-                return False
-        return self.numeric_rank >= other.numeric_rank
+    @classmethod
+    def parse(cls, value: "ConfidenceLevel | str") -> Optional["ConfidenceLevel"]:
+        """Case-insensitive parser for ConfidenceLevel."""
+        if isinstance(value, cls):
+            return value
+        if not isinstance(value, str):
+            return None
+        norm = value.strip().lower().replace("_", "").replace("-", "").replace(" ", "")
+        for member in cls:
+            if member.value.lower() == norm or member.name.lower().replace("_", "") == norm:
+                return member
+        return None
 
-    def __gt__(self, other: ConfidenceLevel | str) -> bool:
-        if isinstance(other, str):
-            try:
-                other = ConfidenceLevel(other)
-            except ValueError:
+    def __ge__(self, other: object) -> bool:
+        if isinstance(other, (ConfidenceLevel, str)):
+            parsed = self.parse(other)
+            if parsed is None:
                 return False
-        return self.numeric_rank > other.numeric_rank
+            return self.numeric_rank >= parsed.numeric_rank
+        return NotImplemented
 
-    def __le__(self, other: ConfidenceLevel | str) -> bool:
-        if isinstance(other, str):
-            try:
-                other = ConfidenceLevel(other)
-            except ValueError:
+    def __gt__(self, other: object) -> bool:
+        if isinstance(other, (ConfidenceLevel, str)):
+            parsed = self.parse(other)
+            if parsed is None:
                 return False
-        return self.numeric_rank <= other.numeric_rank
+            return self.numeric_rank > parsed.numeric_rank
+        return NotImplemented
 
-    def __lt__(self, other: ConfidenceLevel | str) -> bool:
-        if isinstance(other, str):
-            try:
-                other = ConfidenceLevel(other)
-            except ValueError:
+    def __le__(self, other: object) -> bool:
+        if isinstance(other, (ConfidenceLevel, str)):
+            parsed = self.parse(other)
+            if parsed is None:
                 return False
-        return self.numeric_rank < other.numeric_rank
+            return self.numeric_rank <= parsed.numeric_rank
+        return NotImplemented
+
+    def __lt__(self, other: object) -> bool:
+        if isinstance(other, (ConfidenceLevel, str)):
+            parsed = self.parse(other)
+            if parsed is None:
+                return False
+            return self.numeric_rank < parsed.numeric_rank
+        return NotImplemented
 
 
 class JunkType(str, enum.Enum):
@@ -173,7 +186,18 @@ class ApplicationEntry(BaseModel):
         return bool(
             (self.uninstall_string and self.uninstall_string.strip())
             or (self.quiet_uninstall_string and self.quiet_uninstall_string.strip())
-            or (self.uninstaller_type == UninstallerType.STORE_APP)
+            or (
+                self.uninstaller_type
+                in (
+                    UninstallerType.STORE_APP,
+                    UninstallerType.WINDOWS_FEATURE,
+                    UninstallerType.WINDOWS_UPDATE,
+                    UninstallerType.WINGET,
+                    UninstallerType.SCOOP,
+                    UninstallerType.CHOCOLATEY,
+                    UninstallerType.STEAM,
+                )
+            )
             or (self.uninstaller_type == UninstallerType.SIMPLE_DELETE and self.install_location)
         )
 
@@ -225,37 +249,50 @@ class SeverityLevel(str, enum.Enum):
         }
         return ranks.get(self, 0)
 
-    def __ge__(self, other: SeverityLevel | str) -> bool:
-        if isinstance(other, str):
-            try:
-                other = SeverityLevel(other.capitalize())
-            except ValueError:
-                return False
-        return self.numeric_rank >= other.numeric_rank
+    @classmethod
+    def parse(cls, value: "SeverityLevel | str") -> Optional["SeverityLevel"]:
+        """Case-insensitive parser for SeverityLevel."""
+        if isinstance(value, cls):
+            return value
+        if not isinstance(value, str):
+            return None
+        norm = value.strip().lower()
+        for member in cls:
+            if member.value.lower() == norm or member.name.lower() == norm:
+                return member
+        return None
 
-    def __gt__(self, other: SeverityLevel | str) -> bool:
-        if isinstance(other, str):
-            try:
-                other = SeverityLevel(other.capitalize())
-            except ValueError:
+    def __ge__(self, other: object) -> bool:
+        if isinstance(other, (SeverityLevel, str)):
+            parsed = self.parse(other)
+            if parsed is None:
                 return False
-        return self.numeric_rank > other.numeric_rank
+            return self.numeric_rank >= parsed.numeric_rank
+        return NotImplemented
 
-    def __le__(self, other: SeverityLevel | str) -> bool:
-        if isinstance(other, str):
-            try:
-                other = SeverityLevel(other.capitalize())
-            except ValueError:
+    def __gt__(self, other: object) -> bool:
+        if isinstance(other, (SeverityLevel, str)):
+            parsed = self.parse(other)
+            if parsed is None:
                 return False
-        return self.numeric_rank <= other.numeric_rank
+            return self.numeric_rank > parsed.numeric_rank
+        return NotImplemented
 
-    def __lt__(self, other: SeverityLevel | str) -> bool:
-        if isinstance(other, str):
-            try:
-                other = SeverityLevel(other.capitalize())
-            except ValueError:
+    def __le__(self, other: object) -> bool:
+        if isinstance(other, (SeverityLevel, str)):
+            parsed = self.parse(other)
+            if parsed is None:
                 return False
-        return self.numeric_rank < other.numeric_rank
+            return self.numeric_rank <= parsed.numeric_rank
+        return NotImplemented
+
+    def __lt__(self, other: object) -> bool:
+        if isinstance(other, (SeverityLevel, str)):
+            parsed = self.parse(other)
+            if parsed is None:
+                return False
+            return self.numeric_rank < parsed.numeric_rank
+        return NotImplemented
 
 
 class VulnerabilityFinding(BaseModel):

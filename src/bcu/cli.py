@@ -5,10 +5,11 @@ Supports human-friendly rich terminal formatting and machine-readable JSON for A
 
 from __future__ import annotations
 
-import os
+from contextlib import nullcontext
 import sys
 from typing import List, Optional
 import click
+from rich.markup import escape as escape_markup
 from rich.prompt import Confirm
 
 from bcu import __version__
@@ -37,26 +38,32 @@ from bcu.utils.formatting import (
 
 
 def parse_size_str(size_str: Optional[str]) -> Optional[int]:
-    """Parses a string like '500MB', '1.5GB', '100KB' into bytes."""
+    """Parses a string like '500MB', '1.5GB', '2TB', '100KB' into bytes."""
     if not size_str:
         return None
     s = size_str.strip().upper()
     multiplier = 1
-    if s.endswith("GB") or s.endswith("G"):
-        multiplier = 1024 * 1024 * 1024
-        s = s.rstrip("GB").rstrip("G")
-    elif s.endswith("MB") or s.endswith("M"):
-        multiplier = 1024 * 1024
-        s = s.rstrip("MB").rstrip("M")
-    elif s.endswith("KB") or s.endswith("K"):
-        multiplier = 1024
-        s = s.rstrip("KB").rstrip("K")
-    elif s.endswith("B"):
-        multiplier = 1
-        s = s.rstrip("B")
+    for suffix, mult in (
+        ("TB", 1024 * 1024 * 1024 * 1024),
+        ("T", 1024 * 1024 * 1024 * 1024),
+        ("GB", 1024 * 1024 * 1024),
+        ("G", 1024 * 1024 * 1024),
+        ("MB", 1024 * 1024),
+        ("M", 1024 * 1024),
+        ("KB", 1024),
+        ("K", 1024),
+        ("B", 1),
+    ):
+        if s.endswith(suffix):
+            multiplier = mult
+            s = s[: -len(suffix)]
+            break
 
     try:
-        return int(float(s.strip()) * multiplier)
+        val = float(s.strip())
+        if val < 0:
+            return None
+        return int(val * multiplier)
     except ValueError:
         return None
 
@@ -181,16 +188,16 @@ def app_info(target: str, json_mode: bool):
     if json_mode:
         click.echo(to_json_output(matched))
     else:
-        console.print(f"\n[bold cyan]Application Details:[/bold cyan] [bold white]{matched.display_name}[/bold white]")
-        console.print(f" [bold]ID:[/bold]                   {matched.id}")
-        console.print(f" [bold]Version:[/bold]              {matched.display_version or 'N/A'}")
-        console.print(f" [bold]Publisher:[/bold]            {matched.publisher or 'N/A'}")
+        console.print(f"\n[bold cyan]Application Details:[/bold cyan] [bold white]{escape_markup(matched.display_name)}[/bold white]")
+        console.print(f" [bold]ID:[/bold]                   {escape_markup(matched.id)}")
+        console.print(f" [bold]Version:[/bold]              {escape_markup(matched.display_version or 'N/A')}")
+        console.print(f" [bold]Publisher:[/bold]            {escape_markup(matched.publisher or 'N/A')}")
         console.print(f" [bold]Uninstaller Type:[/bold]     {matched.uninstaller_type.value}")
-        console.print(f" [bold]Install Location:[/bold]     {matched.install_location or 'N/A'}")
-        console.print(f" [bold]Uninstall Command:[/bold]    {matched.uninstall_string or 'N/A'}")
-        console.print(f" [bold]Quiet Command:[/bold]        {matched.quiet_uninstall_string or 'N/A'}")
+        console.print(f" [bold]Install Location:[/bold]     {escape_markup(matched.install_location or 'N/A')}")
+        console.print(f" [bold]Uninstall Command:[/bold]    {escape_markup(matched.uninstall_string or 'N/A')}")
+        console.print(f" [bold]Quiet Command:[/bold]        {escape_markup(matched.quiet_uninstall_string or 'N/A')}")
         console.print(f" [bold]Quiet Supported:[/bold]      {'Yes' if matched.quiet_uninstall_possible else 'No'}")
-        console.print(f" [bold]Registry Path:[/bold]        {matched.registry_path or 'N/A'}")
+        console.print(f" [bold]Registry Path:[/bold]        {escape_markup(matched.registry_path or 'N/A')}")
         console.print(f" [bold]Source Scanner:[/bold]       {matched.source_scanner}\n")
 
 
@@ -264,12 +271,15 @@ def uninstall_apps(
     mgr = ScannerManager()
     all_apps = mgr.scan_all()
     target_apps: List[ApplicationEntry] = []
+    seen_target_ids = set()
 
     for t in targets:
         t_lower = t.lower()
-        matched = [a for a in all_apps if a.id.lower() == t_lower or t_lower in a.display_name_trimmed.lower()]
+        exact = [a for a in all_apps if a.id.lower() == t_lower]
+        matched = exact if exact else [a for a in all_apps if t_lower in a.display_name_trimmed.lower()]
         for m in matched:
-            if m not in target_apps:
+            if m.id not in seen_target_ids:
+                seen_target_ids.add(m.id)
                 target_apps.append(m)
 
     if not target_apps:
@@ -282,7 +292,7 @@ def uninstall_apps(
     if not json_mode:
         console.print(f"\n[bold yellow]Target applications for uninstallation ({len(target_apps)}):[/bold yellow]")
         for app in target_apps:
-            console.print(f" - [bold white]{app.display_name}[/bold white] (Type: {app.uninstaller_type.value}, Silent: {app.quiet_uninstall_possible})")
+            console.print(f" - [bold white]{escape_markup(app.display_name)}[/bold white] (Type: {app.uninstaller_type.value}, Silent: {app.quiet_uninstall_possible})")
         if dry_run:
             console.print("\n[bold magenta][DRY-RUN MODE ACTIVATED - NO CHANGES WILL BE MADE][/bold magenta]")
 
@@ -291,7 +301,7 @@ def uninstall_apps(
             console.print("[yellow]Uninstallation cancelled by user.[/yellow]")
             sys.exit(1223)
 
-    conf_level = ConfidenceLevel(junk_confidence)
+    conf_level = ConfidenceLevel.parse(junk_confidence) or ConfidenceLevel.GOOD
     queue = BatchUninstallQueue(
         apps=target_apps,
         prefer_quiet=quiet,
@@ -303,18 +313,19 @@ def uninstall_apps(
         create_restore_point=restore_point,
         junk_min_confidence=conf_level,
         timeout_sec=timeout,
+        all_apps=all_apps,
     )
 
     def on_start(app: ApplicationEntry, idx: int, total: int):
         if not json_mode:
-            console.print(f"\n[bold cyan][{idx}/{total}] Uninstalling:[/bold cyan] [bold white]{app.display_name}[/bold white]...")
+            console.print(f"\n[bold cyan][{idx}/{total}] Uninstalling:[/bold cyan] [bold white]{escape_markup(app.display_name)}[/bold white]...")
 
     def on_finish(res, idx: int, total: int):
         if not json_mode:
             if res.status.value == "Completed":
-                console.print(f"[bold green]✓ Completed:[/bold green] {res.app_name} (Duration: {res.duration_sec:.1f}s, Cleaned Junk: {res.junk_cleaned_count})")
+                console.print(f"[bold green]✓ Completed:[/bold green] {escape_markup(res.app_name)} (Duration: {res.duration_sec:.1f}s, Cleaned Junk: {res.junk_cleaned_count})")
             else:
-                console.print(f"[bold red]✗ Failed:[/bold red] {res.app_name} (Error: {res.error_message})")
+                console.print(f"[bold red]✗ Failed:[/bold red] {escape_markup(res.app_name)} (Error: {escape_markup(res.error_message or 'Unknown error')})")
 
     results = queue.run(on_app_start=on_start, on_app_finish=on_finish)
 
@@ -423,7 +434,7 @@ def export_apps(output_file: str, export_format: str, query: Optional[str]):
 
 
 @main.command(name="ai-helper")
-@click.option("--json", "json_mode", is_flag=True, default=True, help="Output JSON diagnosis and suggestions.")
+@click.option("--json/--no-json", "json_mode", default=True, help="Output JSON diagnosis and suggestions.")
 def ai_helper(json_mode: bool):
     """AI Assistant integration tool: returns system inventory summary, stuck diagnostics, and actionable plan."""
     mgr = ScannerManager()
@@ -521,14 +532,6 @@ def run_gui_app():
     """Alias for 'bcu tui' - Launch the interactive Textual TUI interface."""
     from bcu.tui.app import main as run_app
     run_app()
-
-
-class nullcontext:
-    """Dummy context manager for non-status blocks."""
-    def __enter__(self):
-        return self
-    def __exit__(self, *args):
-        pass
 
 
 if __name__ == "__main__":

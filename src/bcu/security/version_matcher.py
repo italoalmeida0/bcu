@@ -8,16 +8,24 @@ import re
 from typing import List, Optional, Tuple
 
 
+_ARCH_TAG_REGEX = re.compile(
+    r"\(\s*(?:64-bit|32-bit|x64|x86|arm64)\s*\)|\b(?:64-bit|32-bit|x64|x86|arm64)\b",
+    re.IGNORECASE,
+)
+
+
 def parse_version_tuple(version_str: Optional[str]) -> Optional[Tuple[int, ...]]:
     """
     Extracts numeric version segments from a version string.
-    Handles formats like 'v6.23', '23.01', '8.5.7.1', '2.45.1.windows.1'.
+    Handles formats like 'v6.23', '23.01', '8.5.7.1', '2.45.1.windows.1', '6.23 (64-bit)'.
     """
     if not version_str:
         return None
 
+    # Strip architecture/bitness tags so '(64-bit)' doesn't become version segment 64
+    clean = _ARCH_TAG_REGEX.sub(" ", version_str.strip())
     # Strip prefixes like 'v', 'ver', 'version'
-    clean = re.sub(r"^(?:v|ver|version)\s*", "", version_str.strip(), flags=re.IGNORECASE)
+    clean = re.sub(r"^(?:v|ver|version)\s*", "", clean.strip(), flags=re.IGNORECASE)
     # Extract consecutive number sequences
     numbers = re.findall(r"\d+", clean)
     if not numbers:

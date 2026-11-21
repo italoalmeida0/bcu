@@ -37,29 +37,17 @@ jobs:
       - name: Install uv & Dependencies
         run: |
           pip install uv
-          uv pip install --system -e . pyinstaller typer
+          uv pip install --system -e . pyinstaller
 
       - name: Build Standalone Executable with PyInstaller
         run: |
-          pyinstaller --onefile --name bcu `
-            --distpath dist/${{ matrix.target }} `
-            --workpath build/${{ matrix.target }} `
-            --collect-all textual `
-            --collect-all mcp `
-            --collect-all rich `
-            --collect-all pydantic `
-            --hidden-import bcu `
-            --hidden-import bcu.cli `
-            --hidden-import bcu.mcp_server `
-            --hidden-import bcu.tui.app `
-            --hidden-import bcu.security.auditor `
-            --clean src/bcu/__main__.py
+          pyinstaller --distpath dist/${{ matrix.target }} --workpath build/${{ matrix.target }} --clean bcu.spec
 
       - name: Package Portable ZIP
         shell: pwsh
         run: |
           $ver = "${{ github.ref_name }}".TrimStart("v")
-          if (-not $ver) { $ver = "0.1.0" }
+          if (-not $ver) { $ver = "0.2.0" }
           New-Item -ItemType Directory -Force -Path dist/portable
           Copy-Item dist/${{ matrix.target }}/bcu.exe dist/portable/
           Copy-Item README.md dist/portable/
@@ -69,9 +57,9 @@ jobs:
 
       - name: Compile Inno Setup Installer
         uses: Minionguyjpro/Inno-Setup-Action@v1.2.2
-        if: matrix.target == 'x86_64'
         with:
           path: installer/bcu_setup.iss
+          options: /DMyAppArch=${{ matrix.target }}
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4

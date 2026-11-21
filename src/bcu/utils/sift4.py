@@ -36,8 +36,8 @@ def sift4_simplest_distance(s1: Optional[str], s2: Optional[str], max_offset: in
             if c1 != c2:
                 c1 = c2 = max(c1, c2)
 
-            for i in range(max_offset):
-                if (c1 + i < l1) and (c2 + i < l2):
+            if c1 < l1 and c2 < l2:
+                for i in range(1, max_offset):
                     if (c1 + i < l1) and (s1[c1 + i] == s2[c2]):
                         c1 += i - 1
                         c2 -= 1

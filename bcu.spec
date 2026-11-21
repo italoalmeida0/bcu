@@ -3,10 +3,22 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = []
 binaries = []
-hiddenimports = ['bcu', 'bcu.cli', 'bcu.mcp_server', 'bcu.tui.app', 'bcu.security.auditor']
+hiddenimports = [
+    'bcu',
+    'bcu.cli',
+    'bcu.mcp_server',
+    'bcu.tui.app',
+    'bcu.tui.screens.ai_diag_modal',
+    'bcu.tui.screens.audit_modal',
+    'bcu.tui.screens.junk_modal',
+    'bcu.tui.screens.uninstall_modal',
+    'bcu.security.auditor',
+]
+
 tmp_ret = collect_all('textual')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('mcp')
+# Exclude mcp.cli which calls sys.exit(1) when optional 'typer' extra is not installed
+tmp_ret = collect_all('mcp', filter_submodules=lambda name: not name.startswith('mcp.cli'))
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('rich')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
@@ -23,7 +35,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['mcp.cli'],
     noarchive=False,
     optimize=0,
 )

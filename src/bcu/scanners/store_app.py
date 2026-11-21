@@ -5,10 +5,32 @@ Windows Store Apps (UWP / AppX / MSIX) discovery scanner.
 from __future__ import annotations
 
 import json
-from typing import List
+import re
+from typing import List, Optional
 from bcu.models import ApplicationEntry, UninstallerType
 from bcu.scanners.base import BaseScanner
-from bcu.utils.platform import IS_WINDOWS, run_powershell_command
+from bcu.utils.platform import IS_WINDOWS, is_admin, run_powershell_command
+
+
+def _clean_x509_publisher(raw_pub: Optional[str]) -> Optional[str]:
+    """Extracts a human-readable organization/common name from an AppX X.509 Publisher string."""
+    if not raw_pub:
+        return None
+    s = raw_pub.strip()
+    if "CN=" not in s and "O=" not in s:
+        return s
+    # Prefer O= (Organization) if present and readable, otherwise CN=
+    o_match = re.search(r"(?:^|,\s*)O=([^,]+)", s)
+    if o_match:
+        org = o_match.group(1).strip().strip('"')
+        if org:
+            return org
+    cn_match = re.search(r"(?:^|,\s*)CN=([^,]+)", s)
+    if cn_match:
+        cn = cn_match.group(1).strip().strip('"')
+        if cn:
+            return cn
+    return s
 
 
 class StoreAppScanner(BaseScanner):
@@ -25,15 +47,20 @@ class StoreAppScanner(BaseScanner):
         if not self.is_available():
             return []
 
-        # Query Appx packages as JSON via PowerShell
+        # -AllUsers requires elevated privileges; fall back to current user cleanly when non-admin
+        all_users_flag = "-AllUsers" if is_admin() else ""
         ps_cmd = (
-            "Get-AppxPackage -AllUsers | "
+            f"Get-AppxPackage {all_users_flag} | "
             "Where-Object { -not $_.IsFramework -and -not $_.IsResourcePackage } | "
             "Select-Object Name, PackageFullName, Publisher, Version, InstallLocation, NonRemovable, SignatureKind | "
             "ConvertTo-Json -Compress"
         )
 
         code, stdout, _ = run_powershell_command(ps_cmd, timeout_sec=25)
+        if (code != 0 or not stdout) and all_users_flag:
+            # Retry current user only if -AllUsers failed unexpectedly
+            ps_cmd_fallback = ps_cmd.replace("-AllUsers", "")
+            code, stdout, _ = run_powershell_command(ps_cmd_fallback, timeout_sec=25)
         if code != 0 or not stdout:
             return []
 
@@ -51,10 +78,11 @@ class StoreAppScanner(BaseScanner):
             if not name or not full_name:
                 continue
 
-            # Friendly clean name
+            # Friendly clean name & publisher
             clean_name = name.replace("Microsoft.", "").replace(".", " ")
             version = pkg.get("Version")
-            publisher = pkg.get("Publisher")
+            raw_publisher = pkg.get("Publisher")
+            publisher = _clean_x509_publisher(raw_publisher)
             install_loc = pkg.get("InstallLocation")
             is_protected = bool(pkg.get("NonRemovable", False))
 
@@ -72,6 +100,7 @@ class StoreAppScanner(BaseScanner):
                     "IsStoreApp": True,
                     "PackageFullName": full_name,
                     "Name": name,
+                    "RawPublisher": raw_publisher,
                     "SignatureKind": pkg.get("SignatureKind"),
                 },
             )

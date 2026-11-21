@@ -6,11 +6,17 @@ and removal of remnant items (including Services, Startup entries, Tasks, and Re
 from __future__ import annotations
 
 import datetime
+import hashlib
 import os
 import subprocess
 from pathlib import Path
 from typing import List, Optional, Set, Tuple
-from bcu.config import PROHIBITED_DIRECTORIES, PROHIBITED_REGISTRY_KEYS, USE_RECYCLE_BIN
+from bcu.config import (
+    PROHIBITED_DIRECTORIES,
+    PROHIBITED_REGISTRY_KEYS,
+    PROHIBITED_SUBTREE_PREFIXES,
+    USE_RECYCLE_BIN,
+)
 from bcu.junk.finders import (
     AppCompatJunkFinder,
     AppPathsJunkFinder,
@@ -28,7 +34,13 @@ from bcu.junk.finders import (
     WerCrashDumpJunkFinder,
 )
 from bcu.models import ApplicationEntry, ConfidenceLevel, JunkItem, JunkType
-from bcu.utils.platform import IS_WINDOWS, RegistryHelper, delete_path_safe, normalize_path
+from bcu.utils.platform import (
+    IS_WINDOWS,
+    SUBPROCESS_NO_WINDOW_FLAGS,
+    RegistryHelper,
+    delete_path_safe,
+    normalize_path,
+)
 
 
 def get_backup_dir() -> Path:
@@ -40,22 +52,47 @@ def get_backup_dir() -> Path:
 
 
 def export_registry_backup(reg_path: str, app_name: str) -> Optional[str]:
-    """Exports a registry key to a .reg file before deletion for instant rollback."""
+    """Exports a registry key to a unique .reg file before deletion for instant rollback."""
     if not IS_WINDOWS:
         return None
 
     try:
         clean_app = "".join(c if c.isalnum() else "_" for c in app_name)[:30]
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_file = get_backup_dir() / f"reg_{clean_app}_{timestamp}.reg"
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        key_hash = hashlib.sha1(reg_path.encode("utf-8", errors="ignore")).hexdigest()[:6]
+        backup_file = get_backup_dir() / f"reg_{clean_app}_{timestamp}_{key_hash}.reg"
 
         cmd = ["reg.exe", "export", reg_path, str(backup_file), "/y"]
-        subprocess.run(cmd, capture_output=True, timeout=10)
+        subprocess.run(cmd, capture_output=True, timeout=10, creationflags=SUBPROCESS_NO_WINDOW_FLAGS)
         if backup_file.exists() and backup_file.stat().st_size > 0:
             return str(backup_file)
     except Exception:
         pass
     return None
+
+
+def _split_registry_value_path(item_path: str) -> Tuple[Optional[int], str, str]:
+    """
+    Splits a registry value path like `HKCU\\SubKey\\ValueName` into (hive, subpath, value_name).
+    Properly handles AppCompat / Startup values whose names are full Windows file paths containing backslashes.
+    """
+    known_prefixes = list(AppCompatJunkFinder.COMPAT_PATHS) + list(StartupJunkFinder.RUN_KEYS)
+    normalized = item_path.replace("/", "\\")
+    norm_lower = normalized.lower()
+
+    for hive_name, known_subpath in known_prefixes:
+        prefix = f"{hive_name}\\{known_subpath}\\".lower()
+        if norm_lower.startswith(prefix):
+            hive = RegistryHelper.HIVE_MAP.get(hive_name.upper())
+            val_name = normalized[len(prefix):]
+            return hive, known_subpath, val_name
+
+    # Generic fallback for standard registry values without backslashes in value name
+    hive, full_subpath = RegistryHelper.split_hive_and_subpath(normalized)
+    if hive is None or "\\" not in full_subpath:
+        return None, "", ""
+    subpath, val_name = full_subpath.rsplit("\\", 1)
+    return hive, subpath, val_name
 
 
 class JunkCleaner:
@@ -75,6 +112,18 @@ class JunkCleaner:
             if norm in PROHIBITED_DIRECTORIES:
                 return False, f"Prohibited protected system path: {path_str}"
 
+            # Block anything inside core OS subtrees (System32, SysWOW64, WinSxS, etc.)
+            for prefix in PROHIBITED_SUBTREE_PREFIXES:
+                if norm == prefix or norm.startswith(prefix + "\\"):
+                    return False, f"Prohibited protected OS subtree: {path_str}"
+
+            # Block deleting arbitrary files inside Windows root unless it's a .pf Prefetch file
+            win_root = normalize_path(os.environ.get("SystemRoot", "C:\\Windows"))
+            if win_root and norm.startswith(win_root + "\\"):
+                prefetch_prefix = os.path.join(win_root, "prefetch") + "\\"
+                if not (item.junk_type == JunkType.PREFETCH and norm.startswith(prefetch_prefix) and norm.endswith(".pf")):
+                    return False, f"Prohibited Windows directory path: {path_str}"
+
             p = Path(path_str)
             if len(p.parts) <= 1 or p.parent == p:
                 return False, f"Cannot delete root volume: {path_str}"
@@ -85,18 +134,29 @@ class JunkCleaner:
             if not hive_name or not subpath:
                 return False, "Invalid registry path"
 
-            subpath_parts = subpath.lower().split("\\")
+            subpath_parts = [part for part in subpath.lower().split("\\") if part]
+            if len(subpath_parts) <= 1:
+                return False, "Cannot delete top-level registry key"
+
             last_segment = subpath_parts[-1]
             if last_segment in PROHIBITED_REGISTRY_KEYS:
                 return False, f"Prohibited protected registry key: {last_segment}"
 
-            if len(subpath_parts) <= 1:
-                return False, "Cannot delete top-level registry key"
+        # 3. Check Startup & AppCompat registry values / files
+        elif item.junk_type in (JunkType.STARTUP_ENTRY, JunkType.APP_COMPAT):
+            if path_str.upper().startswith(("HKCU\\", "HKLM\\", "HKEY_")):
+                hive, subpath, val_name = _split_registry_value_path(path_str)
+                if hive is None or not subpath or not val_name:
+                    return False, f"Invalid registry value path: {path_str}"
+            else:
+                norm = normalize_path(path_str)
+                if not norm or norm in PROHIBITED_DIRECTORIES:
+                    return False, f"Prohibited protected startup path: {path_str}"
 
-        # 3. Check Windows Services
+        # 4. Check Windows Services
         elif item.junk_type == JunkType.SERVICE:
             if path_str.lower() in PROHIBITED_REGISTRY_KEYS or path_str.lower() in (
-                "rpcss", "dcomlaunch", "eventlog", "lanmanworkstation", "lanmanserver", "wuauserv", "windefend"
+                "rpcss", "dcomlaunch", "eventlog", "lanmanworkstation", "lanmanserver", "wuauserv", "windefend", "bfe", "mpssvc", "dhcp", "dnscache", "trustedinstaller"
             ):
                 return False, f"Prohibited core Windows Service: {path_str}"
 
@@ -188,28 +248,46 @@ class JunkCleaner:
 
         # 3. Startup Entry or AppCompat Entry (Registry value or file)
         elif item.junk_type in (JunkType.STARTUP_ENTRY, JunkType.APP_COMPAT):
-            if "\\" in item.path and (item.path.startswith("HKCU") or item.path.startswith("HKLM")):
-                hive_name, full_subpath = item.path.split("\\", 1)
-                subpath, val_name = full_subpath.rsplit("\\", 1)
-                hive = RegistryHelper.HIVE_MAP.get(hive_name)
-                if hive:
+            if item.path.upper().startswith(("HKCU\\", "HKLM\\", "HKEY_")):
+                hive, subpath, val_name = _split_registry_value_path(item.path)
+                if hive is not None and subpath and val_name:
                     success = RegistryHelper.delete_value(hive, subpath, val_name)
-                    return (True, f"Deleted registry value '{val_name}'") if success else (False, "Failed to delete registry value")
+                    return (
+                        (True, f"Deleted registry value '{val_name}'")
+                        if success
+                        else (False, f"Failed to delete registry value '{val_name}'")
+                    )
+                return False, f"Could not parse registry value path: {item.path}"
             else:
                 return delete_path_safe(item.path, use_recycle_bin=USE_RECYCLE_BIN)
 
         # 4. Windows Service
         elif item.junk_type == JunkType.SERVICE:
             try:
-                subprocess.run(["sc.exe", "stop", item.path], capture_output=True, timeout=5)
-                proc = subprocess.run(["sc.exe", "delete", item.path], capture_output=True, timeout=5)
+                subprocess.run(
+                    ["sc.exe", "stop", item.path],
+                    capture_output=True,
+                    timeout=5,
+                    creationflags=SUBPROCESS_NO_WINDOW_FLAGS,
+                )
+                proc = subprocess.run(
+                    ["sc.exe", "delete", item.path],
+                    capture_output=True,
+                    timeout=5,
+                    creationflags=SUBPROCESS_NO_WINDOW_FLAGS,
+                )
                 if proc.returncode == 0:
                     return True, f"Unregistered Windows Service '{item.path}'"
-                # Fallback to direct registry removal
+                # Fallback to direct registry removal (only report success if deletion actually succeeded!)
                 hive = RegistryHelper.HIVE_MAP.get("HKLM")
                 if hive:
-                    RegistryHelper.delete_key_recursively(hive, f"SYSTEM\\CurrentControlSet\\Services\\{item.path}")
-                    return True, f"Deleted Service registry key '{item.path}'"
+                    svc_reg_path = f"SYSTEM\\CurrentControlSet\\Services\\{item.path}"
+                    if backup_registry:
+                        item.backup_file_path = export_registry_backup(f"HKLM\\{svc_reg_path}", item.app_name)
+                    deleted = RegistryHelper.delete_key_recursively(hive, svc_reg_path)
+                    if deleted:
+                        return True, f"Deleted Service registry key '{item.path}'"
+                return False, f"Failed to delete service '{item.path}' (Admin privileges may be required)"
             except Exception as e:
                 return False, f"Failed to delete service: {e}"
 
@@ -220,10 +298,11 @@ class JunkCleaner:
                     ["schtasks.exe", "/Delete", "/TN", item.path, "/F"],
                     capture_output=True,
                     timeout=8,
+                    creationflags=SUBPROCESS_NO_WINDOW_FLAGS,
                 )
                 if proc.returncode == 0:
                     return True, f"Deleted Scheduled Task '{item.path}'"
-                return False, "Failed to delete scheduled task"
+                return False, "Failed to delete scheduled task (Admin privileges may be required)"
             except Exception as e:
                 return False, f"Error deleting scheduled task: {e}"
 

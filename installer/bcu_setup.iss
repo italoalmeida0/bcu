@@ -2,7 +2,12 @@
 ; Bulk Crap Uninstaller (BCU) Setup Script
 
 #define MyAppName "Bulk Crap Uninstaller"
-#define MyAppVersion "0.1.0"
+#ifndef MyAppVersion
+  #define MyAppVersion "0.2.0"
+#endif
+#ifndef MyAppArch
+  #define MyAppArch "x86_64"
+#endif
 #define MyAppPublisher "Italo Almeida"
 #define MyAppURL "https://github.com/italoalmeida0/bcu"
 #define MyAppExeName "bcu.exe"
@@ -20,11 +25,11 @@ DefaultDirName={autopf}\BCU
 DisableProgramGroupPage=yes
 LicenseFile=..\LICENSE
 OutputDir=..\dist
-OutputBaseFilename=bcu-v{#MyAppVersion}-windows-x86_64-installer
+OutputBaseFilename=bcu-v{#MyAppVersion}-windows-{#MyAppArch}-installer
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
-ArchitecturesInstallIn64BitMode=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible arm64
 PrivilegesRequired=lowest
 ChangesEnvironment=yes
 
@@ -37,7 +42,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Name: "addtopath"; Description: "Add BCU to user PATH (recommended to run 'bcu' in terminal)"; GroupDescription: "System Integration:"
 
 [Files]
-Source: "..\dist\arm64\bcu.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\{#MyAppArch}\bcu.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 

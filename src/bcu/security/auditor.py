@@ -27,7 +27,12 @@ class VulnerabilityAuditor:
     """Audits installed software for known security vulnerabilities and CVEs."""
 
     @classmethod
-    def query_osv_online(cls, package_name: str, version: str) -> List[VulnerabilityFinding]:
+    def query_osv_online(
+        cls,
+        package_name: str,
+        version: str,
+        app_id: Optional[str] = None,
+    ) -> List[VulnerabilityFinding]:
         """Queries OSV.dev (Open Source Vulnerabilities API) for known CVEs/GHSAs."""
         findings: List[VulnerabilityFinding] = []
         if not version or not package_name:
@@ -35,7 +40,7 @@ class VulnerabilityAuditor:
 
         # Clean name
         clean_name = package_name.lower().strip()
-        for suffix in [" (store app)", " (scoop)", " (chocolatey)", " (winget)", " (steam)", " (directory)"]:
+        for suffix in [" (store app)", " (scoop)", " (chocolatey)", " (winget)", " (steam)", " (directory)", " (oculus)"]:
             clean_name = clean_name.replace(suffix, "")
 
         url = "https://api.osv.dev/v1/query"
@@ -85,7 +90,7 @@ class VulnerabilityAuditor:
 
                         finding = VulnerabilityFinding(
                             id=v_id,
-                            app_id=f"osv:{clean_name}:{v_id}".lower(),
+                            app_id=app_id or f"osv:{clean_name}:{v_id}".lower(),
                             app_name=package_name,
                             installed_version=version,
                             affected_range=affected_range,
@@ -111,6 +116,7 @@ class VulnerabilityAuditor:
     ) -> List[VulnerabilityFinding]:
         """Audits a single application against curated CVEs and live OSV.dev database."""
         findings: List[VulnerabilityFinding] = []
+        seen_ids: Set[str] = set()
         ver = app.display_version
         if not ver:
             return findings
@@ -127,8 +133,8 @@ class VulnerabilityAuditor:
             match_names = entry.get("app_match_names", [])
             matches_app = False
             for m in match_names:
-                # Use regex word boundaries so 'rar' doesn't match 'library' or 'git' match 'digital'
-                pattern = r"(?:^|[\s\-_])" + re.escape(m) + r"(?:$|[\s\-_])"
+                # Use regex boundaries (including '.' for 'python 3.11') so 'rar' doesn't match 'library'
+                pattern = r"(?:^|[\s\-_])" + re.escape(m) + r"(?:$|[\s\-_\.])"
                 if re.search(pattern, app_name_lower):
                     matches_app = True
                     break
@@ -139,7 +145,8 @@ class VulnerabilityAuditor:
             affected_range = entry.get("affected_range", "")
             if match_version_constraint(ver, affected_range):
                 sev = entry.get("severity", SeverityLevel.MEDIUM)
-                if sev >= min_severity:
+                if sev >= min_severity and entry["id"] not in seen_ids:
+                    seen_ids.add(entry["id"])
                     finding = VulnerabilityFinding(
                         id=entry["id"],
                         app_id=app.id,
@@ -156,10 +163,11 @@ class VulnerabilityAuditor:
                     findings.append(finding)
 
         # 2. Online OSV.dev Query (if enabled)
-        if online and not findings:
-            online_vulns = cls.query_osv_online(app.display_name_trimmed, ver)
+        if online:
+            online_vulns = cls.query_osv_online(app.display_name_trimmed, ver, app_id=app.id)
             for ov in online_vulns:
-                if ov.severity >= min_severity:
+                if ov.severity >= min_severity and ov.id not in seen_ids:
+                    seen_ids.add(ov.id)
                     findings.append(ov)
 
         return findings

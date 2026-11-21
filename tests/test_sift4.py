@@ -28,3 +28,9 @@ def test_sift4_completely_different():
     dist = sift4_simplest_distance("adobe", "spotify", max_offset=2)
     assert dist >= 4
     assert similarity_ratio("adobe", "spotify") < 0.5
+
+
+def test_sift4_asymmetric_lengths():
+    # Ensure no IndexError when cursors jump past the shorter string
+    assert sift4_simplest_distance("polypane", "jetbrains rider", max_offset=2) > 0
+    assert sift4_simplest_distance("testnonexistentapp", "obs-studio", max_offset=2) > 0

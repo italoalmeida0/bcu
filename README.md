@@ -70,7 +70,7 @@ Clone the repository and install dependencies with `uv`:
 
 ```bash
 # Clone the repository
-cd bcuni
+cd bcu
 
 # Install dependencies and sync virtual environment
 uv sync
@@ -111,19 +111,26 @@ uv run bcu gui
 - **Header Stats Banner**: Live counters for Total Apps, Silent Uninstall percentage, Disk Space usage, and Selection count.
 - **Real-Time Live Search & Filter Bar**: Instant debounce search across names, publishers, IDs, and type dropdowns (MSI, InnoSetup, NSIS, Store Apps, Steam, Package Managers).
 - **Application Grid & Inspector Sidebar**: Split view inspired by BCU's ObjectListView and properties drawer.
+- **Responsive Layout (80×24 to Ultrawide)**: Automatically adapts table column sizing, header metrics, toggleable inspector drawer, and centered flexible modals to any terminal font size or window dimensions.
 - **Interactive Modals**:
-  - `Uninstall Modal`: Bulk uninstaller runner with live progress bar, process logs, and dry-run toggle.
+  - `Uninstall Modal`: Bulk uninstaller runner with live progress bar, restore-point option, process logs, and dry-run toggle.
   - `Junk Remnants Modal`: Deep clean-slate remnant inspector with confidence badges and auto `.reg` backup.
-  - `AI Diagnostic Modal`: System health overview and recommended actions.
+  - `CVE Security Audit Modal`: Interactive vulnerability scanner (offline curated DB + optional OSV.dev feed).
+  - `AI Diagnostic Modal`: System health overview, privilege indicator, and recommended actions.
 
 | Keybinding | Action |
 | :--- | :--- |
 | `[Space]` | Toggle checkbox selection on highlighted application |
 | `[A]` | Select All / Deselect All visible applications |
+| `[/]` | Focus search bar (`[Esc]` returns to table) |
 | `[U]` | Open Bulk Uninstallation Manager for selected applications |
 | `[J]` | Open Clean Slate Remnant Manager |
+| `[V]` | Open CVE Vulnerability Audit modal |
 | `[D]` | Open AI Assistant Diagnostic Suite |
+| `[I]` | Toggle Inspector Sidebar |
+| `[S]` | Toggle Windows System / Protected applications |
 | `[R]` | Refresh system discovery |
+| `[Esc]` | Close active modal |
 | `[Q]` | Quit TUI |
 
 ### 2. `bcu search`
@@ -227,7 +234,7 @@ Add this to your `claude_desktop_config.json` or MCP settings:
       "command": "uv",
       "args": [
         "--directory",
-        "C:\\Users\\italo\\Downloads\\bcuni",
+        "C:\\Users\\italo\\Downloads\\bcu",
         "run",
         "bcu-mcp"
       ]
@@ -261,4 +268,4 @@ uv run pytest -v
 
 ## 📄 License
 
-This project is licensed under the **Apache License 2.0** - matching the original Bulk Crap Uninstaller license. See [LICENSE](LICENSE) for details.
+This project is licensed under the **MIT License**. See [LICENSE](LICENSE) for details.

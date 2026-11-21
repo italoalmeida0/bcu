@@ -45,12 +45,13 @@ def detect_uninstaller_type(
 
     cmd_lower = cmd.lower()
 
-    # 1. Check for MSI / Windows Installer
-    if "msiexec" in cmd_lower or ("package cache\\{" in cmd_lower and ".exe" in cmd_lower):
+    # 1. Check for MSI / Windows Installer (note: WiX Burn Package Cache .exe bundles are handled separately!)
+    is_burn_bundle = "package cache\\{" in cmd_lower and ".exe" in cmd_lower and "msiexec" not in cmd_lower
+    if "msiexec" in cmd_lower:
         return UninstallerType.MSIEXEC
-    if raw_metadata.get("WindowsInstaller") == 1 or raw_metadata.get("WindowsInstaller") == "1":
+    if not is_burn_bundle and (raw_metadata.get("WindowsInstaller") == 1 or raw_metadata.get("WindowsInstaller") == "1"):
         return UninstallerType.MSIEXEC
-    if GUID_PATTERN.search(cmd) and ("msi" in cmd_lower or "/x" in cmd_lower or "/i" in cmd_lower):
+    if not is_burn_bundle and GUID_PATTERN.search(cmd) and ("msi" in cmd_lower or "/x" in cmd_lower or "/i" in cmd_lower):
         return UninstallerType.MSIEXEC
 
     # 2. Check for StoreApp / UWP / MSIX
@@ -97,10 +98,10 @@ def detect_uninstaller_type(
                 return UninstallerType.INNO_SETUP
             return UninstallerType.INNO_SETUP
 
-        # NSIS Nullsoft header inspection
+        # NSIS Nullsoft / Inno Setup header inspection (256 KB covers larger PE stubs)
         try:
             with open(exe_path, "rb") as f:
-                header = f.read(65536)
+                header = f.read(262144)
                 if b"NullsoftInst" in header or b"Nullsoft" in header:
                     return UninstallerType.NSIS
                 if b"Inno Setup" in header:
@@ -117,8 +118,14 @@ def detect_uninstaller_type(
     return UninstallerType.CUSTOM
 
 
+_UNQUOTED_EXE_PATTERN = re.compile(
+    r"^(.+?\.(?:exe|msi|bat|cmd|ps1|msc|com|vbs))(?:\s|$)",
+    re.IGNORECASE,
+)
+
+
 def extract_executable_path(cmd_str: str) -> Optional[str]:
-    """Extracts the first executable path from a command string."""
+    """Extracts the executable path from a command string, handling both quoted and unquoted paths with spaces."""
     if not cmd_str:
         return None
     cmd_str = cmd_str.strip()
@@ -128,7 +135,20 @@ def extract_executable_path(cmd_str: str) -> Optional[str]:
         if end_idx != -1:
             return cmd_str[1:end_idx]
 
-    # Split by spaces if no leading quote
+    if cmd_str.startswith("'"):
+        end_idx = cmd_str.find("'", 1)
+        if end_idx != -1:
+            return cmd_str[1:end_idx]
+
+    # Unquoted path containing spaces up to an executable extension (e.g. C:\Program Files\Steam\uninstall.exe /S)
+    exe_match = _UNQUOTED_EXE_PATTERN.match(cmd_str)
+    if exe_match:
+        return exe_match.group(1).strip()
+
+    if os.path.exists(cmd_str):
+        return cmd_str
+
+    # Fallback: split by whitespace
     parts = cmd_str.split()
     if parts:
         return parts[0]

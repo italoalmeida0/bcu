@@ -5,6 +5,6 @@ A fast, reliable, and intelligent application uninstaller and remnant cleaner CL
 designed for AI assistants and terminal power users.
 """
 
-__version__ = "0.1.0"
-__author__ = "BCU Python Contributors"
-__license__ = "Apache-2.0"
+__version__ = "0.2.0"
+__author__ = "Italo Almeida & BCU Python Contributors"
+__license__ = "MIT"

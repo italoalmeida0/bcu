@@ -2,7 +2,7 @@
 Unit tests for uninstaller type detection and quiet string generation.
 """
 
-from bcu.enrichers.detector import detect_uninstaller_type, enrich_app_uninstaller_type
+from bcu.enrichers.detector import detect_uninstaller_type, enrich_app_uninstaller_type, extract_executable_path
 from bcu.enrichers.quiet_args import generate_quiet_uninstall_string
 from bcu.models import ApplicationEntry, UninstallerType
 
@@ -22,6 +22,39 @@ def test_detect_inno_setup():
 def test_detect_store_app():
     u_type = detect_uninstaller_type(raw_metadata={"IsStoreApp": True})
     assert u_type == UninstallerType.STORE_APP
+
+
+def test_extract_unquoted_path_with_spaces():
+    cmd = r"C:\Program Files (x86)\Steam\uninstall.exe /S"
+    assert extract_executable_path(cmd) == r"C:\Program Files (x86)\Steam\uninstall.exe"
+    cmd_no_args = r"C:\Program Files\Android\Android Studio1\uninstall.exe"
+    assert extract_executable_path(cmd_no_args) == r"C:\Program Files\Android\Android Studio1\uninstall.exe"
+
+
+def test_wix_burn_bundle_quiet_args():
+    burn_cmd = r'"C:\ProgramData\Package Cache\{9527D1A5-8CB4-4BC5-9F25-1AA7418042FF}\Setup.exe" /uninstall'
+    assert detect_uninstaller_type(burn_cmd) != UninstallerType.MSIEXEC
+    app = ApplicationEntry(
+        id="test:burn",
+        display_name="Cyberduck",
+        uninstall_string=burn_cmd,
+        uninstaller_type=UninstallerType.CUSTOM,
+    )
+    quiet_cmd = generate_quiet_uninstall_string(app)
+    assert quiet_cmd is not None
+    assert "/uninstall /quiet /norestart" in quiet_cmd
+    assert "msiexec" not in quiet_cmd.lower()
+
+
+def test_powershell_quiet_not_double_wrapped():
+    app = ApplicationEntry(
+        id="test:ps",
+        display_name="PS App",
+        uninstall_string="powershell.exe -File C:\\app\\remove.ps1",
+        uninstaller_type=UninstallerType.POWER_SHELL,
+    )
+    quiet_cmd = generate_quiet_uninstall_string(app)
+    assert quiet_cmd == "powershell.exe -File C:\\app\\remove.ps1"
 
 
 def test_generate_inno_quiet_string():

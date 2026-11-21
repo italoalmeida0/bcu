@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 from typing import Any, List, Optional
 from rich.console import Console
+from rich.markup import escape as escape_markup
 from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
@@ -86,9 +87,9 @@ def build_apps_table(apps: List[ApplicationEntry], title: str = "Installed Appli
 
         table.add_row(
             str(i),
-            name_text,
-            app.display_version or "-",
-            app.publisher_trimmed or "-",
+            escape_markup(name_text),
+            escape_markup(app.display_version or "-"),
+            escape_markup(app.publisher_trimmed or "-"),
             format_size(app.estimated_size_bytes),
             app.uninstaller_type.value,
             quiet_str,
@@ -115,11 +116,11 @@ def build_junk_table(items: List[JunkItem], title: str = "Detected Junk Remnants
 
         table.add_row(
             str(i),
-            item.app_name,
+            escape_markup(item.app_name),
             item.junk_type.value,
             conf_text,
             str(item.raw_score),
-            path_text,
+            escape_markup(path_text),
         )
     return table
 
@@ -139,17 +140,17 @@ def build_vuln_table(findings: List[VulnerabilityFinding], title: str = "Softwar
     for i, f in enumerate(findings, 1):
         color = severity_color(f.severity)
         sev_badge = f"[{color}]{f.severity.value.upper()}[/{color}]"
-        fixed = f"[bold green]{f.fixed_version}[/bold green]" if f.fixed_version else "[dim]-[/dim]"
+        fixed = f"[bold green]{escape_markup(f.fixed_version)}[/bold green]" if f.fixed_version else "[dim]-[/dim]"
 
         table.add_row(
             str(i),
             sev_badge,
-            f.id,
-            f.app_name,
-            f.installed_version,
-            f.affected_range,
+            escape_markup(f.id),
+            escape_markup(f.app_name),
+            escape_markup(f.installed_version),
+            escape_markup(f.affected_range),
             fixed,
-            f.title,
+            escape_markup(f.title),
         )
     return table
 

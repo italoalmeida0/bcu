@@ -35,14 +35,22 @@ mcp = FastMCP(
     ),
 )
 
-# Pre-warm scanner cache in background on server startup for instant tool response
+# Helper to pre-warm scanner cache in background when running as an MCP server
 def _prewarm_inventory():
     try:
         ScannerManager().scan_all()
     except Exception:
         pass
 
-threading.Thread(target=_prewarm_inventory, daemon=True).start()
+
+def _parse_uninstaller_type(value: Optional[str]) -> Optional[UninstallerType]:
+    if not value:
+        return None
+    norm = value.strip().lower()
+    for member in UninstallerType:
+        if member.value.lower() == norm or member.name.lower() == norm:
+            return member
+    return None
 
 
 @mcp.tool()
@@ -89,6 +97,7 @@ def list_applications(
     uninstaller_type: Optional[str] = None,
     min_size_mb: Optional[int] = None,
     include_system: bool = False,
+    include_protected: bool = False,
     quiet_only: bool = False,
     limit: Optional[int] = 50,
     force_refresh: bool = False,
@@ -102,6 +111,7 @@ def list_applications(
         uninstaller_type: Optional filter (e.g. Msiexec, InnoSetup, Nsis, StoreApp, Steam, Scoop, Chocolatey).
         min_size_mb: Optional minimum size filter in Megabytes.
         include_system: Whether to include Windows system components (default: False).
+        include_protected: Whether to include protected system applications (default: False).
         quiet_only: Whether to list only applications supporting silent uninstallation.
         limit: Max number of applications to return (default: 50).
         force_refresh: Force a fresh rescan of system sources (default: False).
@@ -109,12 +119,7 @@ def list_applications(
     mgr = ScannerManager()
     apps = mgr.scan_all(force_refresh=force_refresh)
 
-    u_type = None
-    if uninstaller_type:
-        try:
-            u_type = UninstallerType(uninstaller_type)
-        except ValueError:
-            pass
+    u_type = _parse_uninstaller_type(uninstaller_type)
 
     min_bytes = min_size_mb * 1024 * 1024 if min_size_mb is not None else None
     criteria = FilterCriteria(
@@ -122,6 +127,7 @@ def list_applications(
         publisher=publisher,
         uninstaller_type=u_type,
         include_system=include_system,
+        include_protected=include_protected,
         has_quiet_only=quiet_only,
         min_size_bytes=min_bytes,
     )
@@ -213,10 +219,7 @@ def scan_application_junk(
     else:
         target_apps = apps
 
-    try:
-        conf_level = ConfidenceLevel(min_confidence)
-    except ValueError:
-        conf_level = ConfidenceLevel.GOOD
+    conf_level = ConfidenceLevel.parse(min_confidence) or ConfidenceLevel.GOOD
 
     all_junk = []
     for app in target_apps:
@@ -275,14 +278,13 @@ def uninstall_application(
     if not matched:
         return {"error": f"Application '{target}' not found"}
 
+    restore_status = None
     if create_restore_point and not dry_run:
         from bcu.utils.platform import create_system_restore_point
-        create_system_restore_point(f"BCU Uninstall: {matched.display_name}")
+        ok_rp, msg_rp = create_system_restore_point(f"BCU Uninstall: {matched.display_name}")
+        restore_status = {"success": ok_rp, "message": msg_rp}
 
-    try:
-        conf_level = ConfidenceLevel(junk_min_confidence)
-    except ValueError:
-        conf_level = ConfidenceLevel.GOOD
+    conf_level = ConfidenceLevel.parse(junk_min_confidence) or ConfidenceLevel.GOOD
 
     result = UninstallerExecutor.execute_uninstall(
         app=matched,
@@ -293,12 +295,16 @@ def uninstall_application(
         backup_registry=backup_registry,
         kill_running=kill_running,
         junk_min_confidence=conf_level,
+        all_apps=apps,
     )
 
     if not dry_run:
         ScannerManager.invalidate_cache()
 
-    return result.model_dump()
+    out = result.model_dump()
+    if restore_status is not None:
+        out["restore_point"] = restore_status
+    return out
 
 
 @mcp.tool()
@@ -329,10 +335,7 @@ def clean_application_junk(
     if not matched:
         matched = [ApplicationEntry(id=f"custom:{target}", display_name=target)]
 
-    try:
-        conf_level = ConfidenceLevel(min_confidence)
-    except ValueError:
-        conf_level = ConfidenceLevel.GOOD
+    conf_level = ConfidenceLevel.parse(min_confidence) or ConfidenceLevel.GOOD
 
     junk_items = []
     for m in matched:
@@ -389,10 +392,7 @@ def audit_vulnerabilities(
         if not apps:
             return {"error": f"No application found matching '{target}'"}
 
-    try:
-        sev = SeverityLevel(min_severity.capitalize())
-    except ValueError:
-        sev = SeverityLevel.LOW
+    sev = SeverityLevel.parse(min_severity) or SeverityLevel.LOW
 
     report = VulnerabilityAuditor.audit_all(apps, min_severity=sev, online=online)
     return report.model_dump()
@@ -400,6 +400,7 @@ def audit_vulnerabilities(
 
 def main():
     """Main entrypoint for running the MCP server over stdio."""
+    threading.Thread(target=_prewarm_inventory, daemon=True).start()
     mcp.run()
 
 

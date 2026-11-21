@@ -18,8 +18,20 @@ def test_parse_version_tuple():
     assert parse_version_tuple("v23.01") == (23, 1)
     assert parse_version_tuple("8.5.7.1") == (8, 5, 7, 1)
     assert parse_version_tuple("2.45.1.windows.1") == (2, 45, 1, 1)
+    assert parse_version_tuple("6.23 (64-bit)") == (6, 23)
+    assert parse_version_tuple("22.01 x64") == (22, 1)
     assert parse_version_tuple("") is None
     assert parse_version_tuple(None) is None
+
+
+def test_git_lfs_not_flagged_as_git_cve():
+    git_lfs = ApplicationEntry(
+        id="reg:hklm:git-lfs",
+        display_name="Git LFS 2.1.0",
+        display_version="2.1.0",
+    )
+    findings = VulnerabilityAuditor.audit_app(git_lfs, min_severity=SeverityLevel.LOW, online=False)
+    assert findings == []
 
 
 def test_compare_versions():

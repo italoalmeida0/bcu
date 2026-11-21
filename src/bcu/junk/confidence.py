@@ -15,9 +15,42 @@ from bcu.utils.sift4 import sift4_simplest_distance, similarity_ratio
 import re
 
 CLEAN_NAME_REGEX = re.compile(
-    r"\s*(\([^)]*(?:64-bit|32-bit|x64|x86|arm64|store app)[^)]*\)|\[[^\]]*(?:64-bit|32-bit|x64|x86|arm64)[^\]]*\]|v?\d+(?:\.\d+)+)\s*",
+    r"\s*(\([^)]*(?:64-bit|32-bit|x64|x86|arm64|store app|steam|winget|scoop|chocolatey|directory|oculus|windows feature)[^)]*\)|"
+    r"\[[^\]]*(?:64-bit|32-bit|x64|x86|arm64)[^\]]*\]|v?\d+(?:\.\d+)+)\s*",
     re.IGNORECASE,
 )
+
+# Built-in Windows executables / system components that must NEVER be fuzzy/substring-matched to third-party apps
+_WINDOWS_BUILTIN_NAMES = {
+    "notepad",
+    "mspaint",
+    "paint",
+    "calc",
+    "calculator",
+    "wordpad",
+    "write",
+    "explorer",
+    "cmd",
+    "powershell",
+    "pwsh",
+    "regedit",
+    "taskmgr",
+    "msconfig",
+    "msiexec",
+    "services",
+    "svchost",
+    "winlogon",
+    "csrss",
+    "lsass",
+    "system",
+    "windows",
+    "microsoft",
+    "control",
+    "mmc",
+    "iexplore",
+    "msedge",
+    "edge",
+}
 
 
 class ConfidenceCalculator:
@@ -25,7 +58,7 @@ class ConfidenceCalculator:
 
     @classmethod
     def clean_name(cls, name: str) -> str:
-        """Strips architecture and version tags from application names."""
+        """Strips architecture, scanner source, and version tags from application names."""
         cleaned = CLEAN_NAME_REGEX.sub(" ", name)
         return re.sub(r"\s+", " ", cleaned).strip().lower()
 
@@ -55,6 +88,10 @@ class ConfidenceCalculator:
         if clean_prod == candidate or clean_cand == product_name:
             return 0
 
+        # Never fuzzy/substring-match a core Windows builtin name to a differently named app (e.g. Notepad++ != notepad)
+        if clean_cand in _WINDOWS_BUILTIN_NAMES and clean_cand != clean_prod:
+            return -1
+
         # Check sift4 distance on clean names
         dist = sift4_simplest_distance(clean_prod, clean_cand, max_offset=2)
         if dist <= 1:
@@ -65,14 +102,16 @@ class ConfidenceCalculator:
         if len(publisher) > 3 and publisher in clean_prod:
             trimmed_prod = clean_prod.replace(publisher, "").strip()
             if len(trimmed_prod) > 3:
+                if trimmed_prod == clean_cand:
+                    return 0
                 trimmed_dist = sift4_simplest_distance(trimmed_prod, clean_cand, max_offset=2)
                 if trimmed_dist <= 1:
                     return trimmed_dist
-                if trimmed_prod == clean_cand:
-                    return 0
 
-        # Check substring inclusion
-        if clean_cand in clean_prod or clean_prod in clean_cand:
+        # Word-boundary containment (e.g. "photoshop" in "photoshop cc", but NOT "notepad" in "notepad++")
+        boundary_cand = re.search(r"(?:^|[\s\-_])" + re.escape(clean_cand) + r"(?:$|[\s\-_])", clean_prod)
+        boundary_prod = re.search(r"(?:^|[\s\-_])" + re.escape(clean_prod) + r"(?:$|[\s\-_])", clean_cand)
+        if boundary_cand or boundary_prod:
             return 1
 
         # Cutoff if distance is small relative to string length
