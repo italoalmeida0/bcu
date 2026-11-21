@@ -612,8 +612,8 @@ def run_tui_app():
 
 @main.command(name="gui")
 def run_gui_app():
-    """Alias for 'bcu tui' - Launch the interactive Textual TUI interface."""
-    from bcu.tui.app import main as run_app
+    """Launch the modern Tkinter Desktop GUI with native app icons and visual inspector."""
+    from bcu.gui.app import main as run_app
     run_app()
 
 

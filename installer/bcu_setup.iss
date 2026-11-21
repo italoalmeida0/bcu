@@ -47,9 +47,10 @@ Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
+Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Parameters: "gui"
 Name: "{autoprograms}\{#MyAppName} TUI"; Filename: "{app}\{#MyAppExeName}"; Parameters: "tui"
 Name: "{autoprograms}\{#MyAppName} Uninstall"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName} TUI"; Filename: "{app}\{#MyAppExeName}"; Parameters: "tui"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Parameters: "gui"; Tasks: desktopicon
 
 [Registry]
 Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; Tasks: addtopath; Check: NeedsAddPath(ExpandConstant('{app}'))
@@ -70,4 +71,4 @@ begin
 end;
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Parameters: "tui"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')} TUI}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Parameters: "gui"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent

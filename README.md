@@ -93,6 +93,23 @@ uv run bcu list --json --limit 5
 
 ---
 
+## 🪟 Modern Desktop GUI (`bcu gui`)
+
+Launch the modern, zero-lag native desktop interface built with **Tkinter + Pillow + Win32 DWM** (seamless Windows 11 dark titlebar, real extracted Windows app icons, 3-pane Apple/Linear layout):
+
+```bash
+# Launch Desktop GUI
+uv run bcu gui
+# or
+uv run bcu-gui
+```
+
+- **Native Application Icons**: Extracts crisp real `.exe`/`.ico` and StoreApp `AppxManifest` logos asynchronously with 4× supersampled squircle monogram fallbacks.
+- **3-Pane Zero-Lag Workspace**: Left navigation rail (`Applications`, `Orphaned Junk`, `Security Audit`, Export JSON/CSV, Admin UAC relaunch), virtualized sortable application grid with checkboxes and dark right-click context menu, and a collapsible Inspector Drawer (`Open Folder`, `Open in RegEdit`, `Verify Digital Signature`, copyable command/path wells).
+- **Safe Orphaned Leftovers & Bulk Uninstall**: Revo/BCU-style verified orphan scanner (blocks active installed apps), Apple-style safety toggles (Quiet, Dry-Run, Post-Uninstall Leftovers, Kill Locking Processes, Auto `.reg` Backup, Restore Point), and integrated CVE Security Audit.
+
+---
+
 ## 🖥️ Big-Tech Textual Terminal User Interface (TUI)
 
 Launch the interactive, Big-Tech tier graphical terminal interface powered by **Textual**:
@@ -102,8 +119,6 @@ Launch the interactive, Big-Tech tier graphical terminal interface powered by **
 uv run bcu tui
 # or
 uv run bcu-tui
-# or
-uv run bcu gui
 ```
 
 ### 🎮 TUI Features & Keybindings

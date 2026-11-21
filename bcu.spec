@@ -7,14 +7,27 @@ hiddenimports = [
     'bcu',
     'bcu.cli',
     'bcu.mcp_server',
+    'bcu.gui',
+    'bcu.gui.app',
+    'bcu.gui.theme',
+    'bcu.gui.icons',
+    'bcu.gui.widgets',
+    'bcu.gui.views',
     'bcu.tui.app',
     'bcu.tui.screens.audit_modal',
     'bcu.tui.screens.junk_modal',
     'bcu.tui.screens.uninstall_modal',
     'bcu.junk.orphans',
     'bcu.security.auditor',
+    'tkinter',
+    'tkinter.ttk',
+    'tkinter.filedialog',
+    'tkinter.messagebox',
+    'tkinter.font',
 ]
 
+tmp_ret = collect_all('PIL')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('textual')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 # Exclude mcp.cli which calls sys.exit(1) when optional 'typer' extra is not installed
