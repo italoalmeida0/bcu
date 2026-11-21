@@ -29,6 +29,8 @@ def test_extract_unquoted_path_with_spaces():
     assert extract_executable_path(cmd) == r"C:\Program Files (x86)\Steam\uninstall.exe"
     cmd_no_args = r"C:\Program Files\Android\Android Studio1\uninstall.exe"
     assert extract_executable_path(cmd_no_args) == r"C:\Program Files\Android\Android Studio1\uninstall.exe"
+    dll_path = r"C:\Program Files\Common Files\System\Ole DB\oledb32.dll"
+    assert extract_executable_path(dll_path) == dll_path
 
 
 def test_wix_burn_bundle_quiet_args():

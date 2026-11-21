@@ -285,10 +285,47 @@ def uninstall_apps(
     target_apps: List[ApplicationEntry] = []
     seen_target_ids = set()
 
+    import re as _re
+    from bcu.junk.confidence import ConfidenceCalculator
+
     for t in targets:
-        t_lower = t.lower()
-        exact = [a for a in all_apps if a.id.lower() == t_lower]
-        matched = exact if exact else [a for a in all_apps if t_lower in a.display_name_trimmed.lower()]
+        t_lower = t.strip().lower()
+        t_clean = ConfidenceCalculator.clean_name(t)
+        # Priority 1: Exact ID match
+        matched = [a for a in all_apps if a.id.lower() == t_lower]
+        # Priority 2: Exact display name or exact clean name match (so "Steam" never matches "MSTeams")
+        if not matched:
+            matched = [
+                a
+                for a in all_apps
+                if a.display_name_trimmed.lower() == t_lower
+                or (t_clean and ConfidenceCalculator.clean_name(a.display_name_trimmed) == t_clean)
+            ]
+        # Priority 3: Word-boundary match (prevents "steam" matching "msteams")
+        if not matched and t_lower:
+            wb_pat = _re.compile(r"(?:^|[\s\-_\.])" + _re.escape(t_lower) + r"(?:$|[\s\-_\.])", _re.IGNORECASE)
+            matched = [a for a in all_apps if wb_pat.search(a.display_name_trimmed)]
+        # Priority 4: Substring fallback only if unique
+        if not matched and t_lower:
+            sub = [a for a in all_apps if t_lower in a.display_name_trimmed.lower()]
+            if len(sub) == 1:
+                matched = sub
+            elif len(sub) > 1:
+                if json_mode:
+                    click.echo(
+                        to_json_output(
+                            {
+                                "error": f"Ambiguous target '{t}'. Specify exact ID.",
+                                "matches": [{"id": m.id, "name": m.display_name_trimmed} for m in sub],
+                            }
+                        )
+                    )
+                else:
+                    err_console.print(f"[bold red]Multiple apps matched '{escape_markup(t)}'. Please specify the exact ID:[/bold red]")
+                    for m in sub:
+                        err_console.print(f" - [bold white]{escape_markup(m.display_name_trimmed)}[/bold white] (ID: [cyan]{escape_markup(m.id)}[/cyan])")
+                sys.exit(1)
+
         for m in matched:
             if m.id not in seen_target_ids:
                 seen_target_ids.add(m.id)

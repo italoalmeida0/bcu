@@ -8,6 +8,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import List, Optional, Set, Tuple
@@ -250,7 +251,18 @@ class JunkCleaner:
         if not q_raw:
             return []
 
-        ghost_ids = {item.app_id for item in OrphanJunkScanner.find_ghost_uninstall_keys(all_apps)}
+        ghost_items = OrphanJunkScanner.find_ghost_uninstall_keys(all_apps)
+        ghost_ids = {item.app_id for item in ghost_items}
+        ghost_clean_names = {
+            ConfidenceCalculator.clean_name(app.display_name_trimmed)
+            for app in all_apps
+            if app.id in ghost_ids
+        }
+        live_registry_clean_names = {
+            ConfidenceCalculator.clean_name(app.display_name_trimmed)
+            for app in all_apps
+            if app.source_scanner == "Registry" and app.id not in ghost_ids
+        }
 
         active_matches: List[ApplicationEntry] = []
         for app in all_apps:
@@ -258,11 +270,14 @@ class JunkCleaner:
                 continue
             app_name_low = app.display_name_trimmed.lower()
             app_clean = ConfidenceCalculator.clean_name(app.display_name_trimmed)
+            # If a Winget entry only mirrors a Ghost Registry key with no healthy Registry entry, don't treat as active
+            if app.source_scanner == "Winget" and app_clean in ghost_clean_names and app_clean not in live_registry_clean_names:
+                continue
             if (
                 app.id.lower() == q_raw
                 or app_name_low == q_raw
                 or (q_clean and app_clean == q_clean)
-                or (len(q_clean) >= 4 and q_clean in app_clean)
+                or (len(q_clean) >= 4 and re.search(r"(?:^|[\s\-_])" + re.escape(q_clean) + r"(?:$|[\s\-_])", app_clean))
             ):
                 active_matches.append(app)
         return active_matches

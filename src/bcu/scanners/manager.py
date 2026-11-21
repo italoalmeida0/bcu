@@ -132,8 +132,11 @@ class ScannerManager:
 
     def _deduplicate_entries(self, entries: List[ApplicationEntry]) -> List[ApplicationEntry]:
         """Deduplicates entries prioritizing Registry > StoreApp > Steam/PackageMgr > Directory."""
+        from bcu.junk.confidence import ConfidenceCalculator
+
         seen_ids = set()
         seen_names = set()
+        seen_clean_to_entry: dict[str, ApplicationEntry] = {}
         seen_locations = set()
         unique: List[ApplicationEntry] = []
 
@@ -155,6 +158,7 @@ class ScannerManager:
         for entry in sorted_entries:
             norm_name = entry.display_name_trimmed.lower()
             base_name = self._strip_scanner_suffix(norm_name)
+            clean_name = ConfidenceCalculator.clean_name(base_name)
             norm_loc = normalize_path(entry.install_location)
 
             if not norm_name:
@@ -164,11 +168,20 @@ class ScannerManager:
             if entry.id in seen_ids:
                 continue
 
+            # Winget packages that already exist in Registry/StoreApp: attach WingetId metadata instead of duplicating rows
+            if entry.source_scanner == "Winget":
+                existing = seen_clean_to_entry.get(base_name) or seen_clean_to_entry.get(clean_name)
+                if existing is not None:
+                    if entry.raw_metadata.get("WingetId"):
+                        existing.raw_metadata["WingetId"] = entry.raw_metadata["WingetId"]
+                    continue
+
             # Directory scanner items should not duplicate existing registry/package apps
             if entry.source_scanner == "Directory":
                 if (
                     norm_name in seen_names
                     or base_name in seen_names
+                    or clean_name in seen_clean_to_entry
                     or (norm_loc and norm_loc in seen_locations)
                 ):
                     continue
@@ -177,6 +190,9 @@ class ScannerManager:
             seen_names.add(norm_name)
             if base_name:
                 seen_names.add(base_name)
+                seen_clean_to_entry.setdefault(base_name, entry)
+            if clean_name:
+                seen_clean_to_entry.setdefault(clean_name, entry)
             if norm_loc:
                 seen_locations.add(norm_loc)
             unique.append(entry)

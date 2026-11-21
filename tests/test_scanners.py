@@ -148,3 +148,22 @@ def test_scanner_manager_dedup_directory_and_unique_ids():
     deduped = mgr._deduplicate_entries(entries)
     assert len(deduped) == 1
     assert deduped[0].id == "reg:hklm:notepad++"
+
+    # Winget entry matching existing Registry app merges WingetId instead of creating duplicate row
+    entries_w = [
+        ApplicationEntry(
+            id="reg:hklm:notepad++",
+            display_name="Notepad++ (ARM 64-bit)",
+            source_scanner="Registry",
+        ),
+        ApplicationEntry(
+            id="winget:notepad++.notepad++",
+            display_name="Notepad++ (ARM 64-bit) (Winget)",
+            source_scanner="Winget",
+            raw_metadata={"IsWinget": True, "WingetId": "Notepad++.Notepad++"},
+        ),
+    ]
+    deduped_w = mgr._deduplicate_entries(entries_w)
+    assert len(deduped_w) == 1
+    assert deduped_w[0].id == "reg:hklm:notepad++"
+    assert deduped_w[0].raw_metadata.get("WingetId") == "Notepad++.Notepad++"

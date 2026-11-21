@@ -59,10 +59,22 @@ _WINDOWS_BUILTIN_PF_MARKERS = (
     "\\program files\\windows security\\",
     "\\program files\\windows sidebar\\",
     "\\program files\\windows portable devices\\",
+    "\\program files\\common files\\system\\",
+    "\\program files (x86)\\common files\\system\\",
     "\\program files\\common files\\microsoft shared\\",
     "\\program files (x86)\\common files\\microsoft shared\\",
+    "\\program files\\common files\\ink\\",
+    "\\program files (x86)\\common files\\ink\\",
+    "\\program files\\common files\\speech engines\\",
+    "\\program files (x86)\\common files\\speech engines\\",
+    "\\program files\\microsoft office\\",
+    "\\program files (x86)\\microsoft office\\",
+    "\\program files\\microsoft\\edge\\application\\",
+    "\\program files (x86)\\microsoft\\edge\\application\\",
     "\\programdata\\microsoft\\windows defender\\",
 )
+
+_COM_BINARY_EXTS = (".dll", ".exe", ".ocx", ".ax", ".tlb")
 
 
 def _is_windows_or_protected_path(path_str: str) -> bool:
@@ -326,7 +338,8 @@ class OrphanJunkScanner:
                 continue
             values = RegistryHelper.read_key_values(hive, subpath, view_64=True)
             for val_name, val_data in values.items():
-                exe = extract_executable_path(str(val_data or ""))
+                expanded_raw = os.path.expandvars(str(val_data or ""))
+                exe = extract_executable_path(expanded_raw)
                 if not exe:
                     continue
                 if os.path.basename(exe).lower() in _WINDOWS_GENERIC_EXECUTABLES:
@@ -359,7 +372,7 @@ class OrphanJunkScanner:
                 continue
             for subkey in RegistryHelper.enum_subkeys(hive, app_paths, view_64=True):
                 full_sub = f"{app_paths}\\{subkey}"
-                default_val = str(RegistryHelper.read_default_value(hive, full_sub, view_64=True) or "")
+                default_val = os.path.expandvars(str(RegistryHelper.read_default_value(hive, full_sub, view_64=True) or ""))
                 exe = extract_executable_path(default_val)
                 if not exe or os.path.basename(exe).lower() in _WINDOWS_GENERIC_EXECUTABLES:
                     continue
@@ -401,7 +414,7 @@ class OrphanJunkScanner:
             except (TypeError, ValueError):
                 continue
 
-            image_path = str(vals.get("ImagePath", "")).strip()
+            image_path = os.path.expandvars(str(vals.get("ImagePath", "")).strip())
             if not image_path or image_path.startswith("\\"):
                 continue
             exe = extract_executable_path(image_path)
@@ -512,23 +525,27 @@ class OrphanJunkScanner:
                         val = RegistryHelper.read_default_value(hive, f"{subpath}\\{clsid}\\{server_key}", view_64=True)
                         if not val:
                             continue
-                        exe = extract_executable_path(str(val))
-                        if not exe:
+                        raw_expanded = os.path.expandvars(str(val).strip())
+                        # InprocServer32 holds a direct DLL/OCX file path (never CLI flags)
+                        if server_key == "InprocServer32":
+                            candidate = raw_expanded.strip('"').strip("'")
+                        else:
+                            candidate = extract_executable_path(raw_expanded) or ""
+                        if not candidate or not candidate.lower().endswith(_COM_BINARY_EXTS):
                             continue
-                        expanded = os.path.expandvars(exe)
-                        norm_exp = normalize_path(expanded)
+                        norm_exp = normalize_path(candidate)
                         if not any(norm_exp.startswith(pref) for pref in safe_app_prefixes):
                             continue
-                        if _is_verified_missing_local_file(expanded):
+                        if _is_verified_missing_local_file(candidate):
                             results.append(
                                 JunkItem(
                                     app_id="orphan:com",
-                                    app_name=Path(expanded).stem[:30],
+                                    app_name=Path(candidate).stem[:30],
                                     junk_type=JunkType.COM_CLSID,
                                     path=f"{hive_name}\\{subpath}\\{clsid}",
                                     confidence_level=ConfidenceLevel.VERY_GOOD,
                                     raw_score=11,
-                                    reasons=[f"Orphaned COM {server_key}: '{expanded}' no longer exists (+11)"],
+                                    reasons=[f"Orphaned COM {server_key}: '{candidate}' no longer exists (+11)"],
                                 )
                             )
                             break

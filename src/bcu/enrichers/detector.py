@@ -119,13 +119,13 @@ def detect_uninstaller_type(
 
 
 _UNQUOTED_EXE_PATTERN = re.compile(
-    r"^(.+?\.(?:exe|msi|bat|cmd|ps1|msc|com|vbs))(?:\s|$)",
+    r"^(.+?\.(?:exe|dll|ocx|ax|cpl|scr|tlb|msi|bat|cmd|ps1|msc|com|vbs))(?:\s|$)",
     re.IGNORECASE,
 )
 
 
 def extract_executable_path(cmd_str: str) -> Optional[str]:
-    """Extracts the executable path from a command string, handling both quoted and unquoted paths with spaces."""
+    """Extracts the executable/DLL path from a command string, handling quoted and unquoted paths with spaces."""
     if not cmd_str:
         return None
     cmd_str = cmd_str.strip()
@@ -140,7 +140,7 @@ def extract_executable_path(cmd_str: str) -> Optional[str]:
         if end_idx != -1:
             return cmd_str[1:end_idx]
 
-    # Unquoted path containing spaces up to an executable extension (e.g. C:\Program Files\Steam\uninstall.exe /S)
+    # Unquoted path containing spaces up to a binary/script extension (e.g. C:\Program Files\Steam\uninstall.exe /S)
     exe_match = _UNQUOTED_EXE_PATTERN.match(cmd_str)
     if exe_match:
         return exe_match.group(1).strip()

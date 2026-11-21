@@ -122,3 +122,29 @@ def test_cli_clean_junk_blocks_installed_app():
         data = json.loads(res.output)
         assert "error" in data
         assert "installed" in data["error"].lower()
+
+
+def test_cli_uninstall_steam_does_not_match_msteams(monkeypatch):
+    from bcu.models import ApplicationEntry, UninstallerType
+    from bcu.scanners.manager import ScannerManager
+
+    mock_apps = [
+        ApplicationEntry(
+            id="reg:hklm:steam",
+            display_name="Steam",
+            uninstall_string=r"C:\Program Files (x86)\Steam\uninstall.exe",
+            uninstaller_type=UninstallerType.NSIS,
+        ),
+        ApplicationEntry(
+            id="store:msteams",
+            display_name="MSTeams (Store App)",
+            uninstaller_type=UninstallerType.STORE_APP,
+        ),
+    ]
+    monkeypatch.setattr(ScannerManager, "scan_all", lambda self, **kw: mock_apps)
+    runner = CliRunner()
+    res = runner.invoke(main, ["uninstall", "Steam", "--dry-run", "--json"])
+    assert res.exit_code == 0
+    data = json.loads(res.output)
+    assert len(data) == 1
+    assert data[0]["app_id"] == "reg:hklm:steam"
