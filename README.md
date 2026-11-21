@@ -113,8 +113,8 @@ uv run bcu gui
 - **Application Grid & Inspector Sidebar**: Split view inspired by BCU's ObjectListView and properties drawer.
 - **Responsive Layout (80×24 to Ultrawide)**: Automatically adapts table column sizing, header metrics, toggleable inspector drawer, and centered flexible modals to any terminal font size or window dimensions.
 - **Interactive Modals**:
-  - `Uninstall Modal`: Bulk uninstaller runner with live progress bar, restore-point option, process logs, and dry-run toggle.
-  - `Junk Remnants Modal`: Deep clean-slate remnant inspector with confidence badges and auto `.reg` backup.
+  - `Uninstall Modal`: Bulk uninstaller runner with live progress bar, restore-point option, process logs, and post-uninstall remnant cleanup.
+  - `Orphaned Leftovers Modal`: Revo/BCU-style cleaner that scans only verified broken remnants from already-removed apps (ghost uninstall keys, broken shortcuts, dead startup/services/firewall/COM) with per-item checkboxes and active-app protection.
   - `CVE Security Audit Modal`: Interactive vulnerability scanner (offline curated DB + optional OSV.dev feed).
 
 | Keybinding | Action |
@@ -123,7 +123,7 @@ uv run bcu gui
 | `[A]` | Select All / Deselect All visible applications |
 | `[/]` | Focus search bar (`[Esc]` returns to table) |
 | `[U]` | Open Bulk Uninstallation Manager for selected applications |
-| `[J]` | Open Clean Slate Remnant Manager |
+| `[J]` | Open Orphaned Leftovers Cleaner (safe system orphan scan + removed app search) |
 | `[V]` | Open CVE Vulnerability Audit modal |
 | `[I]` | Toggle Inspector Sidebar |
 | `[S]` | Toggle Windows System / Protected applications |

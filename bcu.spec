@@ -11,6 +11,7 @@ hiddenimports = [
     'bcu.tui.screens.audit_modal',
     'bcu.tui.screens.junk_modal',
     'bcu.tui.screens.uninstall_modal',
+    'bcu.junk.orphans',
     'bcu.security.auditor',
 ]
 

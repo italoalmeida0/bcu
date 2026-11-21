@@ -243,3 +243,58 @@ def test_notepad_plus_plus_does_not_match_windows_notepad():
     assert ConfidenceCalculator.match_string_to_product(npp, "notepad") == -1
     assert ConfidenceCalculator.match_string_to_product(npp, "Notepad++") == 0
     assert ConfidenceCalculator.clean_name("7-Zip (Winget)") == "7-zip"
+
+
+def test_orphan_missing_file_safety_guards(tmp_path):
+    from bcu.junk.orphans import _is_verified_missing_local_file
+
+    # Existing file is never orphaned
+    live = tmp_path / "live_app.exe"
+    live.write_text("bin", encoding="utf-8")
+    assert _is_verified_missing_local_file(str(live)) is False
+
+    # Missing file on mounted local drive IS detected as missing
+    missing = tmp_path / "removed_app.exe"
+    assert _is_verified_missing_local_file(str(missing)) is True
+
+    # Windows core paths, WindowsApps (ACL-restricted), and unexpanded env vars are NEVER flagged
+    assert _is_verified_missing_local_file(r"C:\Windows\System32\missing_thing.exe") is False
+    assert _is_verified_missing_local_file(r"C:\Program Files\WindowsApps\FakePkg\app.exe") is False
+    assert _is_verified_missing_local_file(r"C:\Program Files\Windows Media Player\wmplayer.exe") is False
+    assert _is_verified_missing_local_file(r"%UNKNOWN_VAR_XYZ%\app.exe") is False
+    assert _is_verified_missing_local_file(r"\\fileserver\share\app.exe") is False
+
+
+def test_ghost_uninstall_key_and_active_app_guard(tmp_path):
+    from bcu.junk.orphans import OrphanJunkScanner
+
+    live_dir = tmp_path / "LiveApp"
+    live_dir.mkdir()
+    live_exe = live_dir / "uninstall.exe"
+    live_exe.write_text("ok", encoding="utf-8")
+
+    live_app = ApplicationEntry(
+        id="reg:hklm:liveapp",
+        display_name="Live Healthy App",
+        install_location=str(live_dir),
+        uninstall_string=f'"{live_exe}"',
+        registry_path=r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\LiveApp",
+        source_scanner="Registry",
+    )
+    ghost_app = ApplicationEntry(
+        id="reg:hklm:ghostapp",
+        display_name="Removed Ghost App",
+        install_location=str(tmp_path / "GoneDir"),
+        uninstall_string=f'"{tmp_path / "GoneDir" / "unins000.exe"}"',
+        registry_path=r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\GhostApp",
+        source_scanner="Registry",
+    )
+
+    ghosts = OrphanJunkScanner.find_ghost_uninstall_keys([live_app, ghost_app])
+    assert len(ghosts) == 1
+    assert ghosts[0].app_id == "reg:hklm:ghostapp"
+
+    # Active guard blocks Live Healthy App, but allows Ghost / Removed apps
+    assert len(JunkCleaner.find_active_installed_matches("Live Healthy App", [live_app, ghost_app])) == 1
+    assert len(JunkCleaner.find_active_installed_matches("Removed Ghost App", [live_app, ghost_app])) == 0
+    assert len(JunkCleaner.find_active_installed_matches("CompletelyUninstalledApp", [live_app, ghost_app])) == 0

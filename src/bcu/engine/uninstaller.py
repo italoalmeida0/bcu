@@ -440,36 +440,67 @@ class UninstallerExecutor:
         except Exception:
             pass
 
-        while proc.poll() is None:
-            time_elapsed = time.time() - start_time
-            if time_elapsed > timeout_sec:
+        # Continuously track spawned child/grandchild processes (crucial for NSIS & Inno Setup
+        # which copy themselves to %TEMP%, launch the copy, and exit the parent with code 0!)
+        tracked_children: dict[int, psutil.Process] = {}
+
+        def _collect_descendants() -> None:
+            roots: List[psutil.Process] = []
+            if parent_ps is not None:
+                roots.append(parent_ps)
+            roots.extend(list(tracked_children.values()))
+            for r in roots:
                 try:
-                    if parent_ps:
-                        for child in parent_ps.children(recursive=True):
-                            try:
-                                child.kill()
-                            except Exception:
-                                pass
-                        parent_ps.kill()
-                    proc.kill()
+                    for ch in r.children(recursive=True):
+                        if ch.pid not in tracked_children and ch.pid != proc.pid:
+                            tracked_children[ch.pid] = ch
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+
+        def _kill_all() -> None:
+            _collect_descendants()
+            for ch in list(tracked_children.values()):
+                try:
+                    ch.kill()
                 except Exception:
                     pass
+            try:
+                if parent_ps:
+                    parent_ps.kill()
+            except Exception:
+                pass
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+        while proc.poll() is None:
+            _collect_descendants()
+            if (time.time() - start_time) > timeout_sec:
+                _kill_all()
                 t_out.join(timeout=1.0)
                 t_err.join(timeout=1.0)
                 return -1, f"Uninstaller timed out after {timeout_sec} seconds"
+            time.sleep(0.15)
 
-            time.sleep(0.25)
-
-        if parent_ps:
-            try:
-                children = parent_ps.children(recursive=True)
-                for child in children:
-                    try:
-                        child.wait(timeout=5)
-                    except (psutil.TimeoutExpired, psutil.NoSuchProcess):
-                        pass
-            except Exception:
-                pass
+        # Wait for any tracked child/grandchild uninstaller processes still running (respecting remaining timeout)
+        while True:
+            _collect_descendants()
+            alive = []
+            for ch in list(tracked_children.values()):
+                try:
+                    if ch.is_running() and ch.status() != psutil.STATUS_ZOMBIE:
+                        alive.append(ch)
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+            if not alive:
+                break
+            if (time.time() - start_time) > timeout_sec:
+                _kill_all()
+                t_out.join(timeout=1.0)
+                t_err.join(timeout=1.0)
+                return -1, f"Uninstaller child process timed out after {timeout_sec} seconds"
+            time.sleep(0.2)
 
         t_out.join(timeout=2.0)
         t_err.join(timeout=2.0)

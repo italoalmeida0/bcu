@@ -100,3 +100,25 @@ def test_cli_summary_human():
     res = runner.invoke(main, ["summary"])
     assert res.exit_code == 0
     assert "Inventory Summary" in res.output
+
+
+def test_cli_scan_orphans_json():
+    runner = CliRunner()
+    res = runner.invoke(main, ["scan-junk", "--orphans", "--fast", "--json"])
+    assert res.exit_code == 0
+    data = json.loads(res.output)
+    assert isinstance(data, list)
+
+
+def test_cli_clean_junk_blocks_installed_app():
+    runner = CliRunner()
+    list_res = runner.invoke(main, ["list", "--json", "--limit", "5"])
+    apps = json.loads(list_res.output)
+    # Pick a non-ghost active app (e.g. Scoop/StoreApp/Winget or live Registry app)
+    active = next((a for a in apps if a.get("source_scanner") in ("StoreApp", "Scoop", "Winget")), None)
+    if active:
+        res = runner.invoke(main, ["clean-junk", active["id"], "--dry-run", "--json"])
+        assert res.exit_code == 1
+        data = json.loads(res.output)
+        assert "error" in data
+        assert "installed" in data["error"].lower()

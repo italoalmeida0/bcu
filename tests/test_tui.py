@@ -140,13 +140,23 @@ async def test_tui_responsive_layout_and_modals(size, monkeypatch):
         await pilot.pause()
         assert len(app.screen_stack) == 1
 
-        # JunkModal & AuditModal geometry & non-overlap
-        jm = JunkModal(target_apps=[], all_apps=apps)
+        # JunkModal (Orphaned Leftovers mode): geometry, zero overlap & installed-app block
+        jm = JunkModal(all_apps=apps)
         jm.scan_junk_task = lambda: None
         app.push_screen(jm)
         await pilot.pause()
+        assert jm.query_one(".junk-search-bar").region.bottom <= jm.query_one("#junk-table").region.y
         assert jm.query_one("#junk-table").region.bottom <= jm.query_one("#junk-log").region.y
         assert jm.query_one("#junk-log").region.bottom <= jm.query_one(".modal-buttons").region.y
+        assert jm.query_one(".modal-buttons").region.bottom <= jm.query_one(".modal-container").region.bottom <= h_term
+
+        # Trying to search an active installed app as "removed" must be blocked
+        rem_input = jm.query_one("#junk-removed-input", Input)
+        rem_input.value = "Sample [Beta] Application 0"
+        jm._trigger_removed_app_scan()
+        await pilot.pause()
+        assert len(jm.junk_items) == 0
+
         await pilot.press("escape")
         await pilot.pause()
 

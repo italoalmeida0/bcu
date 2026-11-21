@@ -48,7 +48,8 @@ class UninstallModal(ModalScreen[bool]):
                 with VerticalScroll(classes="modal-app-list"):
                     for app in self.target_apps:
                         safe_name = escape_markup(app.display_name_trimmed)
-                        yield Static(f" • [bold white]{safe_name}[/bold white] [dim]({app.uninstaller_type.value})[/dim]")
+                        prot = " [bold red][PROTECTED][/bold red]" if app.is_protected else ""
+                        yield Static(f" • [bold white]{safe_name}[/bold white] [dim]({app.uninstaller_type.value})[/dim]{prot}")
 
                 with Grid(classes="modal-options-grid"):
                     yield Checkbox("Prefer Quiet / Silent Mode", value=True, id="opt-quiet", classes="compact-cb")

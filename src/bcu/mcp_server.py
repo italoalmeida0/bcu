@@ -191,6 +191,24 @@ def get_application_info(target: str, force_refresh: bool = False) -> Dict[str, 
 
 
 @mcp.tool()
+def scan_orphaned_junk(
+    min_confidence: str = "Good",
+    deep: bool = True,
+    force_refresh: bool = False,
+) -> List[Dict[str, Any]]:
+    """
+    Scans the entire system for verified orphaned leftovers from already-removed or broken software
+    (ghost uninstall keys, broken shortcuts, dead startup entries, orphaned services/firewall/COM/AppPaths, crash dumps).
+    Never flags active installed applications.
+    """
+    mgr = ScannerManager()
+    apps = mgr.scan_all(force_refresh=force_refresh)
+    conf_level = ConfidenceLevel.parse(min_confidence) or ConfidenceLevel.GOOD
+    items = JunkCleaner.scan_system_orphans(all_apps=apps, min_confidence=conf_level, deep_scan=deep)
+    return [item.model_dump() for item in items]
+
+
+@mcp.tool()
 def scan_application_junk(
     target: Optional[str] = None,
     min_confidence: str = "Good",
@@ -198,31 +216,29 @@ def scan_application_junk(
     force_refresh: bool = False,
 ) -> List[Dict[str, Any]]:
     """
-    Performs a deep remnant scan for leftover files, registry keys, Windows services,
-    scheduled tasks, startup items, firewall rules, and dotfolders (instant from memory cache).
+    Performs a deep remnant scan. If `target` is omitted, safely scans system-wide verified orphaned
+    leftovers from already-removed apps. If `target` is specified, scans remnants matching that app.
     
     Args:
-        target: Optional target app ID or name (scans all apps if omitted).
+        target: Optional target app ID or removed app name (runs safe system orphan scan if omitted).
         min_confidence: Minimum confidence threshold ('VeryGood', 'Good', 'Questionable', 'Bad').
         deep: Perform clean-slate scan (includes services, tasks, firewall, startup).
         force_refresh: Force a fresh rescan of system sources (default: False).
     """
     mgr = ScannerManager()
     apps = mgr.scan_all(force_refresh=force_refresh)
-    target_apps: List[ApplicationEntry] = []
-
-    if target:
-        found = [a for a in apps if target.lower() in a.display_name_trimmed.lower() or target.lower() == a.id.lower()]
-        if not found:
-            found = [ApplicationEntry(id=f"custom:{target}", display_name=target)]
-        target_apps = found
-    else:
-        target_apps = apps
-
     conf_level = ConfidenceLevel.parse(min_confidence) or ConfidenceLevel.GOOD
 
+    if not target:
+        items = JunkCleaner.scan_system_orphans(all_apps=apps, min_confidence=conf_level, deep_scan=deep)
+        return [item.model_dump() for item in items]
+
+    found = [a for a in apps if target.lower() in a.display_name_trimmed.lower() or target.lower() == a.id.lower()]
+    if not found:
+        found = [ApplicationEntry(id=f"removed:{target.lower()}", display_name=target)]
+
     all_junk = []
-    for app in target_apps:
+    for app in found:
         items = JunkCleaner.scan_app_junk(
             app,
             all_apps=apps,
@@ -315,25 +331,41 @@ def clean_application_junk(
     kill_running: bool = True,
     backup_registry: bool = True,
     dry_run: bool = True,
+    force: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Cleans remnant files, registry keys, services, and tasks for an application that was already removed.
-    Defaults to dry_run=True for safety.
+    Refuses to delete files of a currently installed app unless force=True. Defaults to dry_run=True.
     
     Args:
-        target: Application name or ID.
+        target: Removed application name or ID.
         min_confidence: Minimum confidence threshold ('VeryGood', 'Good', 'Questionable').
         deep: Perform deep clean-slate scan (includes services, tasks, firewall, startup).
         kill_running: Terminate blocking processes before cleaning (default: True).
         backup_registry: Export .reg backup before deleting registry keys (default: True).
         dry_run: If True, simulates deletion without modifying the system (default: True).
+        force: Override safety guard if target is still installed (default: False).
     """
     mgr = ScannerManager()
     apps = mgr.scan_all()
 
+    active_matches = JunkCleaner.find_active_installed_matches(target, apps)
+    if active_matches and not force:
+        names = [a.display_name_trimmed for a in active_matches[:5]]
+        return [
+            {
+                "error": (
+                    f"Blocked: '{target}' matches currently installed app(s): {', '.join(names)}. "
+                    "Use uninstall_application instead to avoid corrupting active installations, or pass force=True."
+                ),
+                "installed_matches": names,
+                "success": False,
+            }
+        ]
+
     matched = [a for a in apps if target.lower() in a.display_name_trimmed.lower() or target.lower() == a.id.lower()]
     if not matched:
-        matched = [ApplicationEntry(id=f"custom:{target}", display_name=target)]
+        matched = [ApplicationEntry(id=f"removed:{target.lower()}", display_name=target)]
 
     conf_level = ConfidenceLevel.parse(min_confidence) or ConfidenceLevel.GOOD
 

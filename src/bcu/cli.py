@@ -203,40 +203,52 @@ def app_info(target: str, json_mode: bool):
 
 @main.command(name="scan-junk")
 @click.argument("target", required=False)
+@click.option("--orphans", is_flag=True, default=False, help="Scan system-wide verified orphaned leftovers from already-removed apps.")
 @click.option("-c", "--min-confidence", type=click.Choice([l.value for l in ConfidenceLevel], case_sensitive=False), default=ConfidenceLevel.GOOD.value, help="Minimum confidence level threshold.")
 @click.option("-d/-f", "--deep/--fast", default=True, help="Perform deep clean-slate scan (Services, Tasks, Firewall, Startup, AppPaths).")
 @click.option("--json", "json_mode", is_flag=True, help="Output junk remnants in JSON.")
-def scan_junk(target: Optional[str], min_confidence: str, deep: bool, json_mode: bool):
-    """Scan for leftover remnants (directories, registry, services, tasks, shortcuts) for an app."""
+def scan_junk(target: Optional[str], orphans: bool, min_confidence: str, deep: bool, json_mode: bool):
+    """Scan for orphaned leftovers across the system (default) or remnants for a removed application."""
     mgr = ScannerManager()
     apps = mgr.scan_all()
-    target_apps: List[ApplicationEntry] = []
+    conf_level = ConfidenceLevel.parse(min_confidence) or ConfidenceLevel.GOOD
 
-    if target:
-        found = [a for a in apps if target.lower() in a.display_name_trimmed.lower() or target.lower() == a.id.lower()]
-        if not found:
-            found = [ApplicationEntry(id=f"custom:{target}", display_name=target)]
-        target_apps = found
-    else:
-        target_apps = apps
-
-    conf_level = ConfidenceLevel(min_confidence)
-    all_junk = []
-
-    with console.status("[bold yellow]Scanning for leftover remnants...", spinner="dots") if not json_mode else nullcontext():
-        for app in target_apps:
-            junk_items = JunkCleaner.scan_app_junk(
-                app,
+    if orphans or not target:
+        with console.status("[bold yellow]Scanning system for verified orphaned leftovers...", spinner="dots") if not json_mode else nullcontext():
+            all_junk = JunkCleaner.scan_system_orphans(
                 all_apps=apps,
                 min_confidence=conf_level,
                 deep_scan=deep,
             )
-            all_junk.extend(junk_items)
+        title = f"Verified System Orphaned Leftovers ({len(all_junk)} items, Min Confidence: {conf_level.value})"
+    else:
+        active_matches = JunkCleaner.find_active_installed_matches(target, apps)
+        if active_matches and not json_mode:
+            names = ", ".join(escape_markup(a.display_name_trimmed) for a in active_matches[:3])
+            err_console.print(
+                f"[bold yellow]⚠ Warning:[/bold yellow] '{escape_markup(target)}' matches currently installed app(s): {names}.\n"
+                f"  The items below include active application files. Use [bold]bcu uninstall[/bold] to remove safely."
+            )
+        found = [a for a in apps if target.lower() in a.display_name_trimmed.lower() or target.lower() == a.id.lower()]
+        if not found:
+            found = [ApplicationEntry(id=f"removed:{target.lower()}", display_name=target)]
+
+        all_junk = []
+        with console.status("[bold yellow]Scanning for leftover remnants...", spinner="dots") if not json_mode else nullcontext():
+            for app in found:
+                junk_items = JunkCleaner.scan_app_junk(
+                    app,
+                    all_apps=apps,
+                    min_confidence=conf_level,
+                    deep_scan=deep,
+                )
+                all_junk.extend(junk_items)
+        title = f"Detected Remnants for '{target}' ({len(all_junk)} items, Min Confidence: {conf_level.value}, Deep: {deep})"
 
     if json_mode:
         click.echo(to_json_output(all_junk))
     else:
-        table = build_junk_table(all_junk, title=f"Detected Junk Remnants ({len(all_junk)} items, Min Confidence: {conf_level.value}, Deep: {deep})")
+        table = build_junk_table(all_junk, title=title)
         console.print(table)
 
 
@@ -337,34 +349,64 @@ def uninstall_apps(
 
 
 @main.command(name="clean-junk")
-@click.argument("targets", nargs=-1, required=True)
+@click.argument("targets", nargs=-1, required=False)
+@click.option("--orphans", is_flag=True, default=False, help="Clean verified system-wide orphaned leftovers from already-removed apps.")
 @click.option("-c", "--min-confidence", type=click.Choice([l.value for l in ConfidenceLevel], case_sensitive=False), default=ConfidenceLevel.GOOD.value, help="Minimum confidence level.")
 @click.option("-d/-f", "--deep/--fast", default=True, help="Perform deep clean-slate scan (Services, Tasks, Firewall, Startup, AppPaths).")
 @click.option("-k", "--kill-running", is_flag=True, default=False, help="Terminate blocking background processes before cleaning.")
 @click.option("--backup/--no-backup", default=True, help="Export automatic .reg backup before deleting registry keys.")
+@click.option("--force", is_flag=True, default=False, help="Allow cleaning remnants even if the target app appears to still be installed (DANGEROUS).")
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompt.")
 @click.option("--dry-run", is_flag=True, help="Simulate deletion without making changes.")
 @click.option("--json", "json_mode", is_flag=True, help="Output JSON results.")
 def clean_app_junk(
     targets: tuple[str, ...],
+    orphans: bool,
     min_confidence: str,
     deep: bool,
     kill_running: bool,
     backup: bool,
+    force: bool,
     yes: bool,
     dry_run: bool,
     json_mode: bool,
 ):
-    """Clean remnant files, directories, registry, services, and tasks for specified apps."""
+    """Clean orphaned leftovers (--orphans) or remnants of previously removed apps. Protects active installed apps."""
+    if not orphans and not targets:
+        err_console.print("[bold red]Provide one or more removed app names, or pass --orphans to clean verified system leftovers.[/bold red]")
+        sys.exit(2)
+
     mgr = ScannerManager()
     apps = mgr.scan_all()
-    conf_level = ConfidenceLevel(min_confidence)
+    conf_level = ConfidenceLevel.parse(min_confidence) or ConfidenceLevel.GOOD
 
     junk_items: List = []
+    if orphans:
+        junk_items.extend(
+            JunkCleaner.scan_system_orphans(
+                all_apps=apps,
+                min_confidence=conf_level,
+                deep_scan=deep,
+            )
+        )
+
     for t in targets:
+        active_matches = JunkCleaner.find_active_installed_matches(t, apps)
+        if active_matches and not force:
+            names = [a.display_name_trimmed for a in active_matches[:5]]
+            err_msg = (
+                f"Refusing to clean active files of currently installed app(s): {', '.join(names)}. "
+                "Use 'bcu uninstall <target> --clean-junk' to uninstall safely, or pass --force to override."
+            )
+            if json_mode:
+                click.echo(to_json_output({"error": err_msg, "installed_matches": names}))
+            else:
+                err_console.print(f"[bold red]⛔ BLOCKED:[/bold red] {escape_markup(err_msg)}")
+            sys.exit(1)
+
         matched = [a for a in apps if t.lower() in a.display_name_trimmed.lower() or t.lower() == a.id.lower()]
         if not matched:
-            matched = [ApplicationEntry(id=f"custom:{t}", display_name=t)]
+            matched = [ApplicationEntry(id=f"removed:{t.lower()}", display_name=t)]
 
         for m in matched:
             if kill_running and not dry_run:

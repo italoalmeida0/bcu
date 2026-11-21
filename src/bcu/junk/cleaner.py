@@ -214,6 +214,60 @@ class JunkCleaner:
         return filtered
 
     @classmethod
+    def scan_system_orphans(
+        cls,
+        all_apps: Optional[List[ApplicationEntry]] = None,
+        min_confidence: ConfidenceLevel = ConfidenceLevel.GOOD,
+        deep_scan: bool = True,
+    ) -> List[JunkItem]:
+        """
+        Scans the system for verified orphaned leftovers from already-removed or broken software.
+        Safe to run at any time without risking corruption of currently installed applications.
+        """
+        from bcu.junk.orphans import OrphanJunkScanner
+
+        return OrphanJunkScanner.scan_system_orphans(
+            all_apps=all_apps,
+            min_confidence=min_confidence,
+            deep_scan=deep_scan,
+        )
+
+    @classmethod
+    def find_active_installed_matches(
+        cls,
+        target: str,
+        all_apps: List[ApplicationEntry],
+    ) -> List[ApplicationEntry]:
+        """
+        Returns currently installed (non-ghost) applications matching `target` by ID or clean name.
+        Used to prevent accidental remnant deletion against active, healthy installations.
+        """
+        from bcu.junk.confidence import ConfidenceCalculator
+        from bcu.junk.orphans import OrphanJunkScanner
+
+        q_raw = target.strip().lower()
+        q_clean = ConfidenceCalculator.clean_name(target)
+        if not q_raw:
+            return []
+
+        ghost_ids = {item.app_id for item in OrphanJunkScanner.find_ghost_uninstall_keys(all_apps)}
+
+        active_matches: List[ApplicationEntry] = []
+        for app in all_apps:
+            if app.id in ghost_ids:
+                continue
+            app_name_low = app.display_name_trimmed.lower()
+            app_clean = ConfidenceCalculator.clean_name(app.display_name_trimmed)
+            if (
+                app.id.lower() == q_raw
+                or app_name_low == q_raw
+                or (q_clean and app_clean == q_clean)
+                or (len(q_clean) >= 4 and q_clean in app_clean)
+            ):
+                active_matches.append(app)
+        return active_matches
+
+    @classmethod
     def delete_junk_item(
         cls,
         item: JunkItem,

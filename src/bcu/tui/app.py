@@ -348,12 +348,37 @@ UninstallModal, JunkModal, AuditModal {
 }
 
 .modal-log-sm {
-    height: 5;
+    height: 4;
     min-height: 3;
-    max-height: 7;
+    max-height: 6;
     width: 100%;
     background: #0d1117;
     border: round #30363d;
+}
+
+.junk-search-bar {
+    height: 3;
+    width: 100%;
+    margin-bottom: 0;
+}
+
+#junk-removed-input {
+    width: 1fr;
+    min-width: 16;
+    height: 3;
+    background: #21262d;
+    border: tall #30363d;
+    color: #ffffff;
+}
+
+#junk-removed-input:focus {
+    border: tall #58a6ff;
+}
+
+.junk-bar-btn {
+    height: 3;
+    min-width: 12;
+    margin-left: 1;
 }
 
 .modal-buttons {
@@ -389,7 +414,7 @@ class BcuApp(App):
         Binding("space", "toggle_selection", "Select"),
         Binding("a", "toggle_select_all", "All"),
         Binding("u", "uninstall_selected", "Uninstall"),
-        Binding("j", "scan_junk", "Junk"),
+        Binding("j", "scan_junk", "Orphan Junk"),
         Binding("v", "open_audit", "CVE Audit"),
         Binding("i", "toggle_inspector", "Inspector"),
         Binding("s", "toggle_system_apps", "System"),
@@ -435,7 +460,7 @@ class BcuApp(App):
 
         with Horizontal(classes="action-pill-bar"):
             yield Button("U Uninstall", variant="error", id="btn-uninstall-action", classes="btn-pill")
-            yield Button("J Junk", variant="warning", id="btn-junk-action", classes="btn-pill")
+            yield Button("J Orphans", variant="warning", id="btn-junk-action", classes="btn-pill")
             yield Button("V Audit", variant="success", id="btn-audit-action", classes="btn-pill")
             yield Button("S Sys:OFF", variant="default", id="btn-sys-toggle", classes="btn-pill")
             yield Button("I Panel", variant="default", id="btn-inspector-toggle", classes="btn-pill")
@@ -727,17 +752,10 @@ class BcuApp(App):
         self.push_screen(UninstallModal(target_apps=targets, all_apps=self.all_apps), handle_uninstall_result)
 
     def action_scan_junk(self) -> None:
-        """Opens the clean-slate remnant manager modal."""
+        """Opens the Orphaned Leftovers Cleaner modal (scans broken remnants of removed apps safely)."""
         if self._modal_open():
             return
-        targets = self._resolve_target_apps()
-        if not targets:
-            targets = self.filtered_apps[:5] or self.all_apps[:5]
-        if not targets:
-            self.notify("No applications available to scan.", severity="warning")
-            return
-
-        self.push_screen(JunkModal(target_apps=targets, all_apps=self.all_apps))
+        self.push_screen(JunkModal(all_apps=self.all_apps))
 
     def action_open_audit(self) -> None:
         """Opens the CVE Vulnerability Audit modal."""
