@@ -316,3 +316,109 @@ def test_uninstall_dialog_initializes_with_footer_and_protected_badge(tk_root):
     assert dlg.btn_start._text == "Start Uninstall"
     assert dlg.btn_close._text == "Cancel"
     dlg.destroy()
+
+
+def test_gui_selection_filters_clear_and_shift_ctrl_multiselect(tk_root):
+    apps = _sample_apps()
+    gui = BcuGuiApp(root=tk_root, auto_scan=False)
+    gui.all_apps = apps
+    gui.app_by_id = {a.id: a for a in apps}
+    gui._on_system_toggle(True)  # show all 3 apps
+    tk_root.update_idletasks()
+
+    # Check 1st app, filter by Selected Only -> only 1 row shown
+    gui._toggle_app_id("reg:hklm:7zip")
+    gui._toggle_selected_only()
+    assert [a.id for a in gui.filtered_apps] == ["reg:hklm:7zip"]
+    assert "1 selected" in gui.selection_summary_lbl.cget("text")
+
+    # Clear selection resets selected_only and restores all rows
+    gui.clear_selection()
+    assert len(gui.selected_ids) == 0
+    assert gui.selected_only is False
+    assert len(gui.filtered_apps) == 3
+
+    # Quiet Only filter hides the system app without quiet support
+    gui._toggle_quiet_only()
+    assert len(gui.filtered_apps) == 2
+    gui._reset_all_filters()
+    assert len(gui.filtered_apps) == 3
+
+    # Multi-row Space toggle (select two rows in Treeview, toggle both together)
+    gui.tree.selection_set(["reg:hklm:7zip", "reg:hklm:vscode"])
+    gui.toggle_focused_selection()
+    assert {"reg:hklm:7zip", "reg:hklm:vscode"}.issubset(gui.selected_ids)
+    # Toggling again unchecks both
+    gui.toggle_focused_selection()
+    assert "reg:hklm:7zip" not in gui.selected_ids and "reg:hklm:vscode" not in gui.selected_ids
+
+    # Loading overlay & scanning banner & toast lifecycle
+    gui.loading_overlay.show("Loading...", "Scanning...")
+    assert gui.loading_overlay.is_visible is True
+    gui.loading_overlay.update_subtitle("Halfway...")
+    gui.loading_overlay.hide()
+    assert gui.loading_overlay.is_visible is False
+
+    gui.scan_banner.show("Refreshing...", before=gui._tree_host)
+    assert gui.scan_banner.is_visible is True
+    gui.scan_banner.hide()
+    assert gui.scan_banner.is_visible is False
+
+    gui.show_toast("Test toast", "ok")
+    gui.toast.hide()
+
+
+def test_orphans_view_clean_prunes_deleted_items_and_rescans(tk_root):
+    gui = BcuGuiApp(root=tk_root, auto_scan=False)
+    gui._orphans_scanned_once = True
+    gui._switch_view("orphans")
+
+    item1 = JunkItem(
+        path=r"C:\Users\Demo\Desktop\Old1.lnk",
+        junk_type=JunkType.SHORTCUT,
+        confidence_level=ConfidenceLevel.VERY_GOOD,
+        app_id="orphan:1",
+        app_name="Old1",
+        reasons=["Missing target"],
+    )
+    item2 = JunkItem(
+        path=r"C:\Users\Demo\Desktop\Old2.lnk",
+        junk_type=JunkType.SHORTCUT,
+        confidence_level=ConfidenceLevel.VERY_GOOD,
+        app_id="orphan:2",
+        app_name="Old2",
+        reasons=["Missing target"],
+    )
+    ov = gui.orphans_view
+    ov._has_scanned = True
+    ov.all_items = [item1, item2]
+    ov.selected_indices = {0}
+    ov._render_tree()
+
+    assert ov.tog_dryrun.value is False
+    assert ov.btn_clean._text == "Delete Selected (1)"
+
+    rescan_called = []
+
+    with (
+        patch("bcu.gui.views.messagebox.askyesno", return_value=True),
+        patch("bcu.gui.views.JunkCleaner.clean_junk", return_value=[(item1, True, "Deleted")]),
+        patch.object(ov, "_rescan_after_clean", side_effect=lambda: rescan_called.append(True)),
+    ):
+        # Run synchronously by patching Thread to execute inline
+        class _SyncThread:
+            def __init__(self, target, **kwargs):
+                self._target = target
+
+            def start(self):
+                self._target()
+
+        with patch("bcu.gui.views.threading.Thread", _SyncThread):
+            ov._start_clean()
+            tk_root.update()
+
+    # item1 must be pruned immediately and automatic rescan triggered!
+    assert len(ov.all_items) == 1
+    assert ov.all_items[0].app_id == "orphan:2"
+    assert rescan_called == [True]
+

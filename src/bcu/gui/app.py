@@ -30,7 +30,18 @@ from bcu.gui.theme import (
     hide_dedicated_console_if_owned,
 )
 from bcu.gui.views import AuditView, OrphansView, UninstallDialog
-from bcu.gui.widgets import AppleToggle, FilterChip, ModernButton, ModernSearchBar, NavItem
+from bcu.gui.widgets import (
+    AppleToggle,
+    EmptyStateOverlay,
+    FilterChip,
+    LoadingOverlay,
+    ModernButton,
+    ModernSearchBar,
+    NavItem,
+    ScanningBanner,
+    SpinnerRing,
+    ToastNotification,
+)
 from bcu.models import ApplicationEntry, FilterCriteria, UninstallerType
 from bcu.scanners.manager import ScannerManager
 from bcu.utils.formatting import format_size
@@ -138,10 +149,14 @@ class BcuGuiApp:
         self.selected_ids: Set[str] = set()
         self.active_type: str = "ALL"
         self.show_system: bool = False
+        self.selected_only: bool = False
+        self.quiet_only: bool = False
         self.sort_col: str = "name"
         self.sort_desc: bool = False
         self.focused_app: Optional[ApplicationEntry] = None
         self._hovered_iid: Optional[str] = None
+        self._last_anchor_iid: Optional[str] = None
+        self._is_scanning_apps: bool = False
         self._inspector_visible: bool = True
         self._icon_gen_token: int = 0
         self._orphans_scanned_once: bool = False
@@ -178,11 +193,13 @@ class BcuGuiApp:
             self.stage,
             get_all_apps=lambda: self.all_apps,
             on_count_changed=lambda n: self._nav_items["orphans"].set_badge(str(n) if n > 0 else ""),
+            on_toast=self.show_toast,
         )
         self.audit_view = AuditView(
             self.stage,
             get_all_apps=lambda: self.all_apps,
             on_count_changed=lambda n: self._nav_items["audit"].set_badge(str(n) if n > 0 else ""),
+            on_toast=self.show_toast,
         )
         self._views = {
             "apps": self.apps_view,
@@ -190,18 +207,22 @@ class BcuGuiApp:
             "audit": self.audit_view,
         }
 
-        # Bottom subtle status bar
+        # Floating non-blocking Toast notification
+        self.toast = ToastNotification(self.root)
+
+        # Bottom subtle status bar with live activity spinner
         tk.Frame(self.root, height=1, bg=Colors.BORDER_SUBTLE).pack(fill="x")
         status_bar = tk.Frame(self.root, bg=Colors.BG_SIDEBAR, height=28, padx=16)
         status_bar.pack(fill="x")
         status_bar.pack_propagate(False)
 
+        self.status_spinner = SpinnerRing(status_bar, size=14, stroke=2, bg=Colors.BG_SIDEBAR, track_color=Colors.BG_ELEVATED)
         self.status_lbl = tk.Label(status_bar, text="Ready", bg=Colors.BG_SIDEBAR, fg=Colors.TEXT_SECONDARY, font=Fonts.small(), anchor="w")
         self.status_lbl.pack(side="left", fill="x", expand=True)
 
         tk.Label(
             status_bar,
-            text="Ctrl+F Search  •  Space Toggle  •  Right-Click Actions  •  F5 Refresh",
+            text="Ctrl+F Search  •  Ctrl/Shift+Click Multi-Select  •  Space Toggle  •  Ctrl+D Clear  •  F5 Refresh",
             bg=Colors.BG_SIDEBAR,
             fg=Colors.TEXT_MUTED,
             font=Fonts.micro(),
@@ -301,6 +322,7 @@ class BcuGuiApp:
             top,
             placeholder="Search installed applications by name, publisher, ID, or path... (Ctrl+F)",
             on_change=lambda _q: self.apply_filters_and_render(),
+            on_escape=lambda: self.tree.focus_set(),
         )
         self.search_bar.pack(side="left", fill="x", expand=True)
 
@@ -328,7 +350,7 @@ class BcuGuiApp:
 
         # Segmented Type Filter Chips + System Toggle + Inspector Toggle
         chips_row = tk.Frame(frame, bg=Colors.BG_BASE, padx=20)
-        chips_row.pack(fill="x", pady=(0, 10))
+        chips_row.pack(fill="x", pady=(0, 8))
 
         for label, val in self.TYPE_FILTERS:
             chip = FilterChip(chips_row, label, val, on_select=self._select_type_filter, active=(val == "ALL"))
@@ -355,22 +377,85 @@ class BcuGuiApp:
         )
         self.tog_system.pack(side="right", padx=(0, 12))
 
+        # Selection & Quick-Filter Toolbar (Selected-only filter, Quiet-only filter, Select All, Clear Selection, Live Summary)
+        sel_bar = tk.Frame(frame, bg=Colors.BG_BASE, padx=20)
+        sel_bar.pack(fill="x", pady=(0, 10))
+
+        self.chip_selected_only = FilterChip(
+            sel_bar,
+            "Selected (0)",
+            "SELECTED",
+            on_select=lambda _v: self._toggle_selected_only(),
+            active=False,
+        )
+        self.chip_selected_only.pack(side="left", padx=(0, 6))
+
+        self.chip_quiet_only = FilterChip(
+            sel_bar,
+            "Quiet Only",
+            "QUIET",
+            on_select=lambda _v: self._toggle_quiet_only(),
+            active=False,
+        )
+        self.chip_quiet_only.pack(side="left", padx=(0, 10))
+
+        self.btn_sel_all = ModernButton(
+            sel_bar,
+            "Select Visible",
+            command=self.select_all_visible,
+            variant="secondary",
+            width=102,
+            height=25,
+            radius=6,
+            bg_matte=Colors.BG_BASE,
+        )
+        self.btn_sel_all.pack(side="left", padx=(0, 6))
+
+        self.btn_clear_sel = ModernButton(
+            sel_bar,
+            "Clear Selection",
+            command=self.clear_selection,
+            variant="secondary",
+            width=110,
+            height=25,
+            radius=6,
+            bg_matte=Colors.BG_BASE,
+            disabled=True,
+        )
+        self.btn_clear_sel.pack(side="left")
+
+        self.selection_summary_lbl = tk.Label(
+            sel_bar,
+            text="",
+            bg=Colors.BG_BASE,
+            fg=Colors.TEXT_MUTED,
+            font=Fonts.small(),
+            anchor="e",
+        )
+        self.selection_summary_lbl.pack(side="right")
+
         # Split PanedWindow: Left App Treeview | Right Inspector Drawer
         self.paned = ttk.PanedWindow(frame, orient="horizontal", style="Modern.TPanedwindow")
         self.paned.pack(fill="both", expand=True, padx=20, pady=(0, 14))
 
-        # Table card
+        # Table card with animated LoadingOverlay, ScanningBanner & EmptyStateOverlay
         tbl_border = tk.Frame(self.paned, bg=Colors.BORDER_SUBTLE, padx=1, pady=1)
         tbl_wrap = tk.Frame(tbl_border, bg=Colors.BG_SURFACE)
         tbl_wrap.pack(fill="both", expand=True)
 
+        self.scan_banner = ScanningBanner(tbl_wrap)
+
+        tree_host = tk.Frame(tbl_wrap, bg=Colors.BG_SURFACE)
+        tree_host.pack(fill="both", expand=True)
+        self._tree_host = tree_host
+
         cols = ("version", "publisher", "size", "type", "quiet")
         self.tree = ttk.Treeview(
-            tbl_wrap,
+            tree_host,
             columns=cols,
             show="tree headings",
             style="Modern.Treeview",
-            selectmode="browse",
+            selectmode="extended",
         )
         self.tree.heading("#0", text="APPLICATION ▴", anchor="w", command=lambda: self._sort_by("name"))
         self.tree.heading("version", text="VERSION", anchor="w", command=lambda: self._sort_by("version"))
@@ -391,10 +476,13 @@ class BcuGuiApp:
         self.tree.tag_configure("hover", background=Colors.BG_HOVER)
         self.tree.tag_configure("checked", foreground="#93C5FD")
 
-        vsb = ttk.Scrollbar(tbl_wrap, orient="vertical", style="Modern.TScrollbar", command=self.tree.yview)
+        vsb = ttk.Scrollbar(tree_host, orient="vertical", style="Modern.TScrollbar", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
         self.tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
+
+        self.loading_overlay = LoadingOverlay(tree_host)
+        self.empty_overlay = EmptyStateOverlay(tree_host)
 
         # Keep all 6 columns cleanly proportioned inside the visible table width (zero horizontal clipping)
         def _fit_tree_columns(event) -> None:
@@ -561,10 +649,10 @@ class BcuGuiApp:
         self.prop_sig = self._prop_row(prop_card, "Signature")
         self.prop_flags = self._prop_row(prop_card, "Flags")
 
-        # Copyable Code Wells
-        self.well_cmd = self._code_well(self.insp_inner, "UNINSTALL COMMAND")
-        self.well_loc = self._code_well(self.insp_inner, "INSTALL DIRECTORY")
-        self.well_reg = self._code_well(self.insp_inner, "REGISTRY PATH")
+        # Copyable Code Wells with 1-click Copy pills
+        self.well_cmd = self._code_well(self.insp_inner, "UNINSTALL COMMAND", self._copy_focused_cmd)
+        self.well_loc = self._code_well(self.insp_inner, "INSTALL DIRECTORY", self._copy_focused_path)
+        self.well_reg = self._code_well(self.insp_inner, "REGISTRY PATH", self._copy_focused_reg)
 
         # Bind mousewheel recursively across all inspector children
         self._bind_wheel_recursive(self.insp_inner, _on_wheel)
@@ -585,8 +673,25 @@ class BcuGuiApp:
         self._insp_prop_labels.append(val)
         return val
 
-    def _code_well(self, parent: tk.Misc, title: str) -> tk.Text:
-        tk.Label(parent, text=title, bg=Colors.BG_SURFACE, fg=Colors.TEXT_MUTED, font=Fonts.micro(), anchor="w").pack(fill="x", pady=(0, 4))
+    def _code_well(self, parent: tk.Misc, title: str, on_copy=None) -> tk.Text:
+        hdr = tk.Frame(parent, bg=Colors.BG_SURFACE)
+        hdr.pack(fill="x", pady=(0, 4))
+        tk.Label(hdr, text=title, bg=Colors.BG_SURFACE, fg=Colors.TEXT_MUTED, font=Fonts.micro(), anchor="w").pack(side="left")
+        if on_copy is not None:
+            copy_lbl = tk.Label(
+                hdr,
+                text="Copy",
+                bg=Colors.BG_SURFACE,
+                fg=Colors.ACCENT_BLUE_HOVER,
+                font=Fonts.micro(),
+                cursor="hand2",
+                padx=4,
+            )
+            copy_lbl.pack(side="right")
+            copy_lbl.bind("<Button-1>", lambda _e: on_copy())
+            copy_lbl.bind("<Enter>", lambda _e: copy_lbl.configure(fg="#FFFFFF"))
+            copy_lbl.bind("<Leave>", lambda _e: copy_lbl.configure(fg=Colors.ACCENT_BLUE_HOVER))
+
         border = tk.Frame(parent, bg=Colors.BORDER_SUBTLE, padx=1, pady=1)
         border.pack(fill="x", pady=(0, 12))
         txt = tk.Text(
@@ -625,9 +730,23 @@ class BcuGuiApp:
             relief="flat",
             font=Fonts.small(),
         )
-        self.ctx_menu.add_command(label="Toggle Selection  (Space)", command=self.toggle_focused_selection)
-        self.ctx_menu.add_command(label="Uninstall Application...", command=self._uninstall_focused_only)
-        self.ctx_menu.add_separator()
+
+    def _populate_context_menu(self, highlighted_ids: List[str]) -> None:
+        self.ctx_menu.delete(0, "end")
+        n_hi = len(highlighted_ids)
+        if n_hi > 1:
+            self.ctx_menu.add_command(label=f"Check {n_hi} Highlighted", command=lambda: self._set_highlighted_checked(True))
+            self.ctx_menu.add_command(label=f"Uncheck {n_hi} Highlighted", command=lambda: self._set_highlighted_checked(False))
+            self.ctx_menu.add_command(label=f"Uninstall {n_hi} Highlighted...", command=self._uninstall_highlighted)
+            self.ctx_menu.add_separator()
+        else:
+            self.ctx_menu.add_command(label="Toggle Selection  (Space)", command=self.toggle_focused_selection)
+            self.ctx_menu.add_command(label="Uninstall Application...", command=self._uninstall_focused_only)
+            self.ctx_menu.add_separator()
+        if self.selected_ids:
+            self.ctx_menu.add_command(label=f"Uninstall {len(self.selected_ids)} Checked...", command=self.open_uninstall_dialog)
+            self.ctx_menu.add_command(label="Clear All Checked  (Ctrl+D)", command=self.clear_selection)
+            self.ctx_menu.add_separator()
         self.ctx_menu.add_command(label="Open Install Folder", command=self._open_focused_folder)
         self.ctx_menu.add_command(label="Open in Registry Editor", command=self._open_focused_regedit)
         self.ctx_menu.add_command(label="Verify Digital Signature", command=self._verify_focused_signature)
@@ -635,18 +754,37 @@ class BcuGuiApp:
         self.ctx_menu.add_command(label="Copy Uninstall Command", command=self._copy_focused_cmd)
         self.ctx_menu.add_command(label="Copy Application ID", command=self._copy_focused_id)
         self.ctx_menu.add_command(label="Copy Install Path", command=self._copy_focused_path)
+        self.ctx_menu.add_command(label="Copy Registry Path", command=self._copy_focused_reg)
 
     def _bind_shortcuts(self) -> None:
         self.root.bind("<Control-f>", lambda _e: (self._switch_view("apps"), self.search_bar.focus_input()))
         self.root.bind("<Control-a>", self._on_ctrl_a)
+        self.root.bind("<Control-d>", self._on_ctrl_d)
+        self.root.bind("<Control-Key-1>", lambda _e: self._switch_view("apps"))
+        self.root.bind("<Control-Key-2>", lambda _e: self._switch_view("orphans"))
+        self.root.bind("<Control-Key-3>", lambda _e: self._switch_view("audit"))
         self.root.bind("<F5>", lambda _e: self.load_applications_async(force_refresh=True))
         self.root.bind("<Delete>", lambda _e: self.open_uninstall_dialog() if self._active_view_name == "apps" else None)
 
     def _on_ctrl_a(self, event) -> Optional[str]:
-        if isinstance(event.widget, tk.Entry):
+        if isinstance(event.widget, (tk.Entry, tk.Text)):
             return None
         if self._active_view_name == "apps":
             self.toggle_select_all_visible()
+            return "break"
+        if self._active_view_name == "orphans":
+            self.orphans_view._select_visible()
+            return "break"
+        return None
+
+    def _on_ctrl_d(self, event) -> Optional[str]:
+        if isinstance(event.widget, (tk.Entry, tk.Text)):
+            return None
+        if self._active_view_name == "apps":
+            self.clear_selection()
+            return "break"
+        if self._active_view_name == "orphans":
+            self.orphans_view._deselect_all()
             return "break"
         return None
 
@@ -670,30 +808,81 @@ class BcuGuiApp:
     def _set_status(self, msg: str) -> None:
         self.status_lbl.configure(text=msg)
 
+    def _set_status_spinner(self, active: bool) -> None:
+        if active:
+            if not self.status_spinner.winfo_ismapped():
+                self.status_spinner.pack(side="left", padx=(0, 8), before=self.status_lbl)
+            self.status_spinner.start()
+        else:
+            self.status_spinner.stop()
+            self.status_spinner.pack_forget()
+
+    def show_toast(self, message: str, tone: str = "info") -> None:
+        if not self._destroyed:
+            self.toast.show(message, tone=tone)
+
     def load_applications_async(self, force_refresh: bool = False) -> None:
+        if self._is_scanning_apps:
+            return
+        self._is_scanning_apps = True
         self.btn_refresh.set_disabled(True)
+        self.empty_overlay.hide()
+        self._set_status_spinner(True)
         self._set_status("Scanning installed applications across Windows sources...")
+
+        had_apps = bool(self.all_apps)
+        if had_apps:
+            self.scan_banner.show("Refreshing installed applications across Windows sources...", before=self._tree_host)
+        else:
+            self.loading_overlay.show(
+                "Scanning Installed Applications...",
+                "Discovering Windows Registry, Store Apps, Winget, Steam, Scoop & more...",
+            )
 
         def _worker() -> None:
             def _prog(msg: str) -> None:
-                self.root.after(0, lambda m=msg: self._set_status(m))
+                def _u() -> None:
+                    self._set_status(msg)
+                    if self.loading_overlay.is_visible:
+                        self.loading_overlay.update_subtitle(msg)
+                    if self.scan_banner.is_visible:
+                        self.scan_banner.update_message(msg)
+
+                self._safe_after(_u)
 
             try:
                 mgr = ScannerManager()
                 apps = mgr.scan_all(progress_callback=_prog, force_refresh=force_refresh)
             except Exception as exc:
-                self.root.after(0, lambda e=str(exc): (self._set_status(f"Scan error: {e}"), self.btn_refresh.set_disabled(False)))
+                def _err(e=str(exc)) -> None:
+                    self._is_scanning_apps = False
+                    self.loading_overlay.hide()
+                    self.scan_banner.hide()
+                    self._set_status_spinner(False)
+                    self.btn_refresh.set_disabled(False)
+                    self._set_status(f"Scan error: {e}")
+                    self.show_toast(f"Scan failed: {e}", "err")
+
+                self._safe_after(_err)
                 return
 
             def _done() -> None:
+                self._is_scanning_apps = False
                 self.all_apps = apps
                 self.app_by_id = {a.id: a for a in apps}
+                # Prune any checked IDs that were uninstalled
+                self.selected_ids.intersection_update(self.app_by_id.keys())
+                self.loading_overlay.hide()
+                self.scan_banner.hide()
+                self._set_status_spinner(False)
                 self.btn_refresh.set_disabled(False)
                 self.apply_filters_and_render()
                 self._set_status(f"Loaded {len(apps)} applications across Windows sources.")
+                if had_apps:
+                    self.show_toast(f"Refreshed {len(apps)} applications", "ok")
                 self._start_lazy_icon_loader()
 
-            self.root.after(0, _done)
+            self._safe_after(_done)
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -755,6 +944,27 @@ class BcuGuiApp:
         self.show_system = val
         self.apply_filters_and_render()
 
+    def _toggle_selected_only(self) -> None:
+        self.selected_only = not self.selected_only
+        self.chip_selected_only.set_active(self.selected_only)
+        self.apply_filters_and_render()
+
+    def _toggle_quiet_only(self) -> None:
+        self.quiet_only = not self.quiet_only
+        self.chip_quiet_only.set_active(self.quiet_only)
+        self.apply_filters_and_render()
+
+    def _reset_all_filters(self) -> None:
+        self.search_bar.reset_silently()
+        self.active_type = "ALL"
+        for k, chip in self._type_chips.items():
+            chip.set_active(k == "ALL")
+        self.selected_only = False
+        self.chip_selected_only.set_active(False)
+        self.quiet_only = False
+        self.chip_quiet_only.set_active(False)
+        self.apply_filters_and_render()
+
     def _toggle_inspector(self) -> None:
         if self._inspector_visible:
             self.paned.forget(self.inspector_pane)
@@ -789,10 +999,13 @@ class BcuGuiApp:
 
     def apply_filters_and_render(self) -> None:
         query = self.search_bar.get_query()
+        # When "Selected Only" filter is active, show ALL checked apps regardless of System Apps toggle
+        inc_sys = True if self.selected_only else self.show_system
         criteria = FilterCriteria(
             query=query if query else None,
-            include_system=self.show_system,
-            include_protected=self.show_system,
+            include_system=inc_sys,
+            include_protected=inc_sys,
+            has_quiet_only=self.quiet_only,
         )
         if self.active_type == "PackageMgr":
             pool = [
@@ -808,6 +1021,9 @@ class BcuGuiApp:
             pool = self.all_apps
         else:
             pool = self.all_apps
+
+        if self.selected_only:
+            pool = [a for a in pool if a.id in self.selected_ids]
 
         filtered = ScannerManager.filter_entries(pool, criteria)
 
@@ -850,6 +1066,31 @@ class BcuGuiApp:
 
         self._update_metrics()
 
+        if self._is_scanning_apps and not self.all_apps:
+            self.empty_overlay.hide()
+        elif not self.filtered_apps and self.all_apps:
+            if self.selected_only and not self.selected_ids:
+                self.empty_overlay.show(
+                    "No Applications Selected",
+                    "Check applications with click, Ctrl+Click, Shift+Click, or Space — or disable the Selected filter.",
+                    icon="☐",
+                    icon_color=Colors.TEXT_MUTED,
+                    action_text="Show All Apps",
+                    action_cmd=self._reset_all_filters,
+                )
+            else:
+                q_msg = f"No applications match '{query}'." if query else "No applications match the active filters."
+                self.empty_overlay.show(
+                    "No Matching Applications",
+                    q_msg,
+                    icon="⌕",
+                    icon_color=Colors.TEXT_MUTED,
+                    action_text="Reset Filters",
+                    action_cmd=self._reset_all_filters,
+                )
+        else:
+            self.empty_overlay.hide()
+
         if self.filtered_apps:
             target = self.focused_app if (self.focused_app and self.tree.exists(self.focused_app.id)) else self.filtered_apps[0]
             self.tree.selection_set(target.id)
@@ -864,6 +1105,7 @@ class BcuGuiApp:
         quiet = sum(1 for a in self.all_apps if a.quiet_uninstall_possible)
         size_b = sum(a.estimated_size_bytes or 0 for a in self.all_apps)
         sel = len(self.selected_ids)
+        sel_size = sum((self.app_by_id[i].estimated_size_bytes or 0) for i in self.selected_ids if i in self.app_by_id)
         pct = f"{(quiet / total * 100):.0f}%" if total > 0 else "0%"
 
         self.stat_apps_lbl.configure(text=f"{len(self.filtered_apps)}/{total}" if len(self.filtered_apps) != total else str(total))
@@ -872,29 +1114,98 @@ class BcuGuiApp:
         self.stat_sel_lbl.configure(text=str(sel))
         self._nav_items["apps"].set_badge(str(len(self.filtered_apps)))
         self.btn_uninstall.set_text(f"Uninstall ({sel})" if sel > 0 else "Uninstall")
+        self.chip_selected_only.set_text(f"Selected ({sel})")
+        self.btn_clear_sel.set_disabled(sel == 0)
+        self.btn_sel_all.set_disabled(not bool(self.filtered_apps))
+
+        if sel > 0:
+            sz_str = f"  •  ~{format_size(sel_size)}" if sel_size > 0 else ""
+            self.selection_summary_lbl.configure(
+                text=f"{sel} selected{sz_str}",
+                fg=Colors.ACCENT_BLUE_HOVER,
+                font=Fonts.small_bold(),
+            )
+        elif total > 0:
+            self.selection_summary_lbl.configure(
+                text=f"Showing {len(self.filtered_apps)} of {total} apps  •  {format_size(size_b)}",
+                fg=Colors.TEXT_MUTED,
+                font=Fonts.small(),
+            )
+        else:
+            self.selection_summary_lbl.configure(text="", fg=Colors.TEXT_MUTED)
 
     def _on_tree_select(self, _e=None) -> None:
         sel = self.tree.selection()
         if not sel:
             return
-        app = self.app_by_id.get(sel[0])
+        app = self.app_by_id.get(sel[-1])
         if app:
             self._inspect_app(app)
 
-    def _on_tree_click(self, event) -> None:
+    def _refresh_row_check_visual(self, app_id: str) -> None:
+        app = self.app_by_id.get(app_id)
+        if not app or not self.tree.exists(app_id):
+            return
+        is_sel = app_id in self.selected_ids
+        chk = "☑" if is_sel else "☐"
+        tags = [t for t in self.tree.item(app_id, "tags") if t != "checked"]
+        if is_sel:
+            tags.append("checked")
+        self.tree.item(app_id, text=f"  {chk}  {app.display_name_trimmed}", tags=tuple(tags))
+
+    def _on_tree_click(self, event) -> Optional[str]:
         col = self.tree.identify_column(event.x)
         row_iid = self.tree.identify_row(event.y)
-        # Clicking the checkbox zone inside column #0 toggles selection immediately
-        if col == "#0" and row_iid and event.x <= dp(58):
+        if not row_iid:
+            return None
+
+        shift_held = bool(event.state & 0x0001)
+        ctrl_held = bool(event.state & 0x0004)
+
+        # Shift+Click: check & highlight the entire contiguous range from anchor to clicked row
+        if shift_held and self._last_anchor_iid and self.tree.exists(self._last_anchor_iid):
+            children = list(self.tree.get_children())
+            if self._last_anchor_iid in children and row_iid in children:
+                i1 = children.index(self._last_anchor_iid)
+                i2 = children.index(row_iid)
+                lo, hi = min(i1, i2), max(i1, i2)
+                range_iids = children[lo : hi + 1]
+                for rid in range_iids:
+                    self.selected_ids.add(rid)
+                    self._refresh_row_check_visual(rid)
+                self.tree.selection_set(range_iids)
+                app = self.app_by_id.get(row_iid)
+                if app:
+                    self._inspect_app(app)
+                self._update_metrics()
+                return "break"
+
+        # Ctrl+Click anywhere on a row toggles its checkbox while preserving multi-selection
+        if ctrl_held:
             self._toggle_app_id(row_iid)
+            self._last_anchor_iid = row_iid
+            return None
+
+        # Plain click inside checkbox zone of column #0 toggles that row's checkbox
+        if col == "#0" and event.x <= dp(58):
+            self._toggle_app_id(row_iid)
+            self._last_anchor_iid = row_iid
+            return None
+
+        self._last_anchor_iid = row_iid
+        return None
 
     def _on_tree_right_click(self, event) -> None:
         row_iid = self.tree.identify_row(event.y)
         if row_iid:
-            self.tree.selection_set(row_iid)
+            current_sel = list(self.tree.selection())
+            if row_iid not in current_sel:
+                self.tree.selection_set(row_iid)
+                current_sel = [row_iid]
             app = self.app_by_id.get(row_iid)
             if app:
                 self._inspect_app(app)
+            self._populate_context_menu(current_sel)
             try:
                 self.ctx_menu.tk_popup(event.x_root, event.y_root)
             finally:
@@ -922,9 +1233,28 @@ class BcuGuiApp:
         self._hovered_iid = None
 
     def toggle_focused_selection(self) -> None:
-        sel = self.tree.selection()
-        if sel:
+        sel = list(self.tree.selection())
+        if not sel:
+            return
+        if len(sel) == 1:
             self._toggle_app_id(sel[0])
+            return
+        all_checked = all(app_id in self.selected_ids for app_id in sel)
+        self._set_highlighted_checked(not all_checked)
+
+    def _set_highlighted_checked(self, checked: bool) -> None:
+        for app_id in self.tree.selection():
+            if app_id not in self.app_by_id:
+                continue
+            if checked:
+                self.selected_ids.add(app_id)
+            else:
+                self.selected_ids.discard(app_id)
+            self._refresh_row_check_visual(app_id)
+        if self.selected_only and not checked:
+            self.apply_filters_and_render()
+        else:
+            self._update_metrics()
 
     def _toggle_app_id(self, app_id: str) -> None:
         app = self.app_by_id.get(app_id)
@@ -934,14 +1264,33 @@ class BcuGuiApp:
             self.selected_ids.remove(app_id)
         else:
             self.selected_ids.add(app_id)
-        is_sel = app_id in self.selected_ids
-        chk = "☑" if is_sel else "☐"
-        if self.tree.exists(app_id):
-            tags = [t for t in self.tree.item(app_id, "tags") if t != "checked"]
-            if is_sel:
-                tags.append("checked")
-            self.tree.item(app_id, text=f"  {chk}  {app.display_name_trimmed}", tags=tuple(tags))
+        self._refresh_row_check_visual(app_id)
+        if self.selected_only and app_id not in self.selected_ids:
+            self.apply_filters_and_render()
+        else:
+            self._update_metrics()
+
+    def select_all_visible(self) -> None:
+        if not self.filtered_apps:
+            return
+        for a in self.filtered_apps:
+            self.selected_ids.add(a.id)
+            self._refresh_row_check_visual(a.id)
         self._update_metrics()
+
+    def clear_selection(self) -> None:
+        if not self.selected_ids:
+            return
+        prev = list(self.selected_ids)
+        self.selected_ids.clear()
+        if self.selected_only:
+            self.selected_only = False
+            self.chip_selected_only.set_active(False)
+            self.apply_filters_and_render()
+        else:
+            for app_id in prev:
+                self._refresh_row_check_visual(app_id)
+            self._update_metrics()
 
     def toggle_select_all_visible(self) -> None:
         if not self.filtered_apps:
@@ -1087,6 +1436,7 @@ class BcuGuiApp:
             return
 
         self.prop_sig.configure(text="Verifying...", fg=Colors.ACCENT_BLUE_HOVER)
+        self._set_status_spinner(True)
         self._set_status(f"Verifying Authenticode signature of {os.path.basename(exe)}...")
         app_id = app.id
 
@@ -1095,15 +1445,21 @@ class BcuGuiApp:
             self._sig_cache[app_id] = (ok_s, signer)
 
             def _done() -> None:
+                if not self._is_scanning_apps:
+                    self._set_status_spinner(False)
+                short_signer = (signer.split(",")[0].replace("CN=", "") if signer else "Unsigned")
                 if self.focused_app and self.focused_app.id == app_id:
-                    short_signer = (signer.split(",")[0].replace("CN=", "") if signer else "Unsigned")
                     self.prop_sig.configure(
                         text=f"✓ {short_signer}" if ok_s else "Unverified",
                         fg=Colors.ACCENT_GREEN_HOVER if ok_s else Colors.ACCENT_AMBER_HOVER,
                     )
                 self._set_status(f"Signature check ({os.path.basename(exe)}): {'Valid - ' + str(signer) if ok_s else 'Not validly signed'}")
+                self.show_toast(
+                    f"Valid signature: {short_signer}" if ok_s else f"Not validly signed ({os.path.basename(exe)})",
+                    "ok" if ok_s else "warn",
+                )
 
-            self.root.after(0, _done)
+            self._safe_after(_done)
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -1111,6 +1467,7 @@ class BcuGuiApp:
         self.root.clipboard_clear()
         self.root.clipboard_append(text)
         self._set_status(f"Copied {label} to clipboard.")
+        self.show_toast(f"Copied {label}", "info")
 
     def _copy_focused_cmd(self) -> None:
         if not self.focused_app:
@@ -1127,10 +1484,19 @@ class BcuGuiApp:
         if self.focused_app and self.focused_app.install_location:
             self._copy_to_clipboard(self.focused_app.install_location, "install directory")
 
+    def _copy_focused_reg(self) -> None:
+        if self.focused_app and self.focused_app.registry_path:
+            self._copy_to_clipboard(self.focused_app.registry_path, "registry path")
+
     def _uninstall_focused_only(self) -> None:
         if not self.focused_app:
             return
         self._open_uninstall_for([self.focused_app])
+
+    def _uninstall_highlighted(self) -> None:
+        targets = [self.app_by_id[i] for i in self.tree.selection() if i in self.app_by_id]
+        if targets:
+            self._open_uninstall_for(targets)
 
     def open_uninstall_dialog(self) -> None:
         targets = [a for a in self.all_apps if a.id in self.selected_ids]
@@ -1170,6 +1536,7 @@ class BcuGuiApp:
             else:
                 ApplicationSerializer.export_json(self.filtered_apps or self.all_apps, path)
             self._set_status(f"Exported {len(self.filtered_apps or self.all_apps)} apps to {path}")
+            self.show_toast(f"Exported {len(self.filtered_apps or self.all_apps)} apps ({fmt.upper()})", "ok")
         except Exception as exc:
             messagebox.showerror("Export Failed", str(exc), parent=self.root)
 

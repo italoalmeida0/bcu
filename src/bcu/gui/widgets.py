@@ -6,6 +6,7 @@ so corners, pills, search inputs, and toggle switches render smoothly with zero 
 from __future__ import annotations
 
 import tkinter as tk
+from tkinter import ttk
 from typing import Callable, Optional
 from PIL import ImageTk
 
@@ -315,6 +316,9 @@ class FilterChip(tk.Frame):
         self._active = active
         self._refresh()
 
+    def set_text(self, text: str) -> None:
+        self._lbl.configure(text=text)
+
 
 class ModernSearchBar(tk.Frame):
     """Crisp dark search bar with focus border highlight, icon, placeholder, and instant clear button."""
@@ -325,12 +329,14 @@ class ModernSearchBar(tk.Frame):
         placeholder: str = "Search...",
         on_change: Optional[Callable[[str], None]] = None,
         on_submit: Optional[Callable[[str], None]] = None,
+        on_escape: Optional[Callable[[], None]] = None,
         debounce_ms: int = 85,
     ) -> None:
         super().__init__(parent, bg=Colors.BORDER, padx=1, pady=1)
         self._placeholder = placeholder
         self._on_change = on_change
         self._on_submit = on_submit
+        self._on_escape = on_escape
         self._debounce_ms = debounce_ms
         self._after_id: Optional[str] = None
         self._has_placeholder = True
@@ -372,6 +378,7 @@ class ModernSearchBar(tk.Frame):
         self.entry.bind("<FocusOut>", self._on_focus_out)
         self.entry.bind("<KeyRelease>", self._on_key)
         self.entry.bind("<Return>", self._on_return)
+        self.entry.bind("<Escape>", self._on_esc)
 
     def get_query(self) -> str:
         if self._has_placeholder:
@@ -422,6 +429,26 @@ class ModernSearchBar(tk.Frame):
     def _on_return(self, _e=None) -> None:
         if self._on_submit:
             self._on_submit(self.get_query())
+
+    def _on_esc(self, _e=None) -> str:
+        if self.get_query():
+            self.clear()
+        if self._on_escape:
+            self._on_escape()
+        return "break"
+
+    def reset_silently(self) -> None:
+        """Clears the search input and restores placeholder without stealing focus."""
+        if self._after_id:
+            try:
+                self.after_cancel(self._after_id)
+            except Exception:
+                pass
+            self._after_id = None
+        self._has_placeholder = True
+        self.var.set(self._placeholder)
+        self.entry.configure(fg=Colors.TEXT_MUTED)
+        self._clear_btn.pack_forget()
 
 
 class AppleToggle(tk.Frame):
@@ -493,3 +520,315 @@ class MetricCard(tk.Frame):
 
     def set_value(self, text: str) -> None:
         self._val_lbl.configure(text=text)
+
+
+class SpinnerRing(tk.Canvas):
+    """Smooth animated Apple/Linear circular loading arc with zero CPU usage when stopped."""
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        size: int = 34,
+        stroke: int = 3,
+        color: str = Colors.ACCENT_BLUE_HOVER,
+        track_color: str = Colors.BG_HOVER,
+        bg: Optional[str] = None,
+    ) -> None:
+        s = dp(size)
+        bg_c = bg or str(parent.cget("bg"))
+        super().__init__(parent, width=s, height=s, bg=bg_c, highlightthickness=0, bd=0)
+        self._angle = 90
+        self._running = False
+        self._after_id: Optional[str] = None
+
+        pad = max(2, dp(stroke))
+        box = (pad, pad, s - pad, s - pad)
+        self.create_oval(*box, outline=track_color, width=dp(stroke))
+        self._arc = self.create_arc(
+            *box,
+            start=self._angle,
+            extent=112,
+            style="arc",
+            outline=color,
+            width=dp(stroke),
+        )
+        self.bind("<Destroy>", lambda _e: self.stop(), add="+")
+
+    def start(self) -> None:
+        if self._running:
+            return
+        self._running = True
+        self._tick()
+
+    def stop(self) -> None:
+        self._running = False
+        if self._after_id:
+            try:
+                self.after_cancel(self._after_id)
+            except Exception:
+                pass
+            self._after_id = None
+
+    def _tick(self) -> None:
+        if not self._running:
+            return
+        try:
+            self._angle = (self._angle - 14) % 360
+            self.itemconfigure(self._arc, start=self._angle)
+            self._after_id = self.after(32, self._tick)
+        except tk.TclError:
+            self._running = False
+
+
+class LoadingOverlay(tk.Frame):
+    """Centered translucent-feel loading card placed over a table during initial scan or long actions."""
+
+    def __init__(self, parent: tk.Misc) -> None:
+        super().__init__(parent, bg=Colors.BG_SURFACE)
+        self._visible = False
+
+        card_border = tk.Frame(self, bg=Colors.BORDER, padx=1, pady=1)
+        card_border.place(relx=0.5, rely=0.46, anchor="center")
+
+        card = tk.Frame(card_border, bg=Colors.BG_ELEVATED, padx=dp(32), pady=dp(24))
+        card.pack()
+
+        self.spinner = SpinnerRing(card, size=40, stroke=3, bg=Colors.BG_ELEVATED)
+        self.spinner.pack(pady=(0, 14))
+
+        self.title_lbl = tk.Label(
+            card,
+            text="Scanning...",
+            bg=Colors.BG_ELEVATED,
+            fg=Colors.TEXT_PRIMARY,
+            font=Fonts.heading(),
+        )
+        self.title_lbl.pack()
+
+        self.sub_lbl = tk.Label(
+            card,
+            text="Please wait a moment...",
+            bg=Colors.BG_ELEVATED,
+            fg=Colors.TEXT_SECONDARY,
+            font=Fonts.small(),
+            wraplength=dp(340),
+            justify="center",
+        )
+        self.sub_lbl.pack(pady=(5, 14))
+
+        self.bar = ttk.Progressbar(
+            card,
+            style="Modern.Horizontal.TProgressbar",
+            mode="indeterminate",
+            length=dp(260),
+        )
+        self.bar.pack()
+
+    @property
+    def is_visible(self) -> bool:
+        return self._visible
+
+    def show(self, title: str, subtitle: str = "") -> None:
+        self.title_lbl.configure(text=title)
+        self.sub_lbl.configure(text=subtitle)
+        if not self._visible:
+            self._visible = True
+            self.place(relx=0, rely=0, relwidth=1, relheight=1)
+            self.lift()
+            self.spinner.start()
+            self.bar.start(14)
+
+    def update_subtitle(self, subtitle: str) -> None:
+        if self._visible:
+            self.sub_lbl.configure(text=subtitle)
+
+    def hide(self) -> None:
+        if self._visible:
+            self._visible = False
+            self.spinner.stop()
+            self.bar.stop()
+            self.place_forget()
+
+
+class ScanningBanner(tk.Frame):
+    """Compact animated inline top strip shown while refreshing an already-populated list."""
+
+    def __init__(self, parent: tk.Misc) -> None:
+        super().__init__(parent, bg=Colors.TINT_BLUE, padx=12, pady=6)
+        self._visible = False
+
+        self.spinner = SpinnerRing(self, size=16, stroke=2, bg=Colors.TINT_BLUE, track_color="#1D3861")
+        self.spinner.pack(side="left", padx=(0, 8))
+
+        self.msg_lbl = tk.Label(
+            self,
+            text="Refreshing...",
+            bg=Colors.TINT_BLUE,
+            fg=Colors.ACCENT_BLUE_HOVER,
+            font=Fonts.small_bold(),
+            anchor="w",
+        )
+        self.msg_lbl.pack(side="left", fill="x", expand=True)
+
+        self.bar = ttk.Progressbar(
+            self,
+            style="Modern.Horizontal.TProgressbar",
+            mode="indeterminate",
+            length=dp(120),
+        )
+        self.bar.pack(side="right", padx=(10, 0))
+
+    @property
+    def is_visible(self) -> bool:
+        return self._visible
+
+    def show(self, message: str, before: Optional[tk.Misc] = None) -> None:
+        self.msg_lbl.configure(text=message)
+        if not self._visible:
+            self._visible = True
+            if before is not None:
+                self.pack(fill="x", side="top", before=before)
+            else:
+                self.pack(fill="x", side="top")
+            self.spinner.start()
+            self.bar.start(14)
+
+    def update_message(self, message: str) -> None:
+        if self._visible:
+            self.msg_lbl.configure(text=message)
+
+    def hide(self) -> None:
+        if self._visible:
+            self._visible = False
+            self.spinner.stop()
+            self.bar.stop()
+            self.pack_forget()
+
+
+class EmptyStateOverlay(tk.Frame):
+    """Minimalist empty-state card placed over a table when 0 items match."""
+
+    def __init__(self, parent: tk.Misc) -> None:
+        super().__init__(parent, bg=Colors.BG_SURFACE)
+        self._visible = False
+        self._action_cmd: Optional[Callable[[], None]] = None
+
+        box = tk.Frame(self, bg=Colors.BG_SURFACE)
+        box.place(relx=0.5, rely=0.45, anchor="center")
+
+        self.icon_lbl = tk.Label(box, text="✓", bg=Colors.BG_SURFACE, fg=Colors.TEXT_MUTED, font=(Fonts.FAMILY, 24, "bold"))
+        self.icon_lbl.pack(pady=(0, 6))
+
+        self.title_lbl = tk.Label(box, text="", bg=Colors.BG_SURFACE, fg=Colors.TEXT_PRIMARY, font=Fonts.heading())
+        self.title_lbl.pack()
+
+        self.sub_lbl = tk.Label(
+            box,
+            text="",
+            bg=Colors.BG_SURFACE,
+            fg=Colors.TEXT_SECONDARY,
+            font=Fonts.small(),
+            wraplength=dp(360),
+            justify="center",
+        )
+        self.sub_lbl.pack(pady=(4, 12))
+
+        self.action_btn = ModernButton(
+            box,
+            "Reset Filters",
+            command=self._invoke_action,
+            variant="secondary",
+            width=140,
+            height=30,
+            bg_matte=Colors.BG_SURFACE,
+        )
+
+    def _invoke_action(self) -> None:
+        if self._action_cmd:
+            self._action_cmd()
+
+    def show(
+        self,
+        title: str,
+        subtitle: str = "",
+        icon: str = "○",
+        icon_color: str = Colors.TEXT_MUTED,
+        action_text: Optional[str] = None,
+        action_cmd: Optional[Callable[[], None]] = None,
+    ) -> None:
+        self.icon_lbl.configure(text=icon, fg=icon_color)
+        self.title_lbl.configure(text=title)
+        self.sub_lbl.configure(text=subtitle)
+        self._action_cmd = action_cmd
+        if action_text and action_cmd:
+            self.action_btn.set_text(action_text)
+            if not self.action_btn.winfo_ismapped():
+                self.action_btn.pack()
+        else:
+            self.action_btn.pack_forget()
+        if not self._visible:
+            self._visible = True
+            self.place(relx=0, rely=0, relwidth=1, relheight=1)
+            self.lift()
+
+    def hide(self) -> None:
+        if self._visible:
+            self._visible = False
+            self.place_forget()
+
+
+class ToastNotification(tk.Frame):
+    """Non-blocking floating status pill anchored at bottom-right with auto-dismiss."""
+
+    TONES = {
+        "ok": (Colors.ACCENT_GREEN, Colors.TINT_GREEN, Colors.ACCENT_GREEN_HOVER),
+        "info": (Colors.ACCENT_BLUE, Colors.TINT_BLUE, Colors.ACCENT_BLUE_HOVER),
+        "warn": (Colors.ACCENT_AMBER, Colors.TINT_AMBER, Colors.ACCENT_AMBER_HOVER),
+        "err": (Colors.ACCENT_RED, Colors.TINT_RED, Colors.ACCENT_RED_HOVER),
+    }
+
+    def __init__(self, parent: tk.Misc) -> None:
+        super().__init__(parent, bg=Colors.BORDER, padx=1, pady=1)
+        self._after_id: Optional[str] = None
+
+        self._inner = tk.Frame(self, bg=Colors.BG_ELEVATED)
+        self._inner.pack(fill="both", expand=True)
+
+        self._bar = tk.Frame(self._inner, width=dp(4), bg=Colors.ACCENT_BLUE)
+        self._bar.pack(side="left", fill="y")
+
+        self._lbl = tk.Label(
+            self._inner,
+            text="",
+            bg=Colors.BG_ELEVATED,
+            fg=Colors.TEXT_PRIMARY,
+            font=Fonts.small_bold(),
+            padx=12,
+            pady=7,
+        )
+        self._lbl.pack(side="left")
+
+        for w in (self, self._inner, self._bar, self._lbl):
+            w.bind("<Button-1>", lambda _e: self.hide())
+
+    def show(self, message: str, tone: str = "info", duration_ms: int = 2800) -> None:
+        accent, _, _ = self.TONES.get(tone, self.TONES["info"])
+        self._bar.configure(bg=accent)
+        self._lbl.configure(text=message)
+        if self._after_id:
+            try:
+                self.after_cancel(self._after_id)
+            except Exception:
+                pass
+        self.place(relx=1.0, rely=1.0, x=-dp(20), y=-dp(40), anchor="se")
+        self.lift()
+        self._after_id = self.after(duration_ms, self.hide)
+
+    def hide(self) -> None:
+        if self._after_id:
+            try:
+                self.after_cancel(self._after_id)
+            except Exception:
+                pass
+            self._after_id = None
+        self.place_forget()
