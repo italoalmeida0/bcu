@@ -55,9 +55,9 @@ Designed specifically for **terminal power users** and **autonomous AI coding/ma
   - **Severity Badges**: Standardized CVSS ratings (`Critical`, `High`, `Medium`, `Low`) with affected version ranges and fixed patch versions.
   - **CLI & MCP Tool**: Integrated into CLI (`bcu audit --min-severity HIGH --json`) and FastMCP for AI agents.
 
-- **🤖 AI-First CLI Design**:
-  - Universal `--json` flag on all subcommands for machine consumption.
-  - `bcu ai-helper` diagnostics command designed for LLMs and agent toolkits.
+- **Automation & Agent-Ready CLI + MCP**:
+  - Universal `--json` flag on all subcommands for scripting and external AI agents.
+  - `bcu summary` inventory overview command and native `bcu mcp` server.
   - Non-interactive batch execution (`--yes` / `-y`, `--quiet`, `--deep`).
 
 ---
@@ -116,7 +116,6 @@ uv run bcu gui
   - `Uninstall Modal`: Bulk uninstaller runner with live progress bar, restore-point option, process logs, and dry-run toggle.
   - `Junk Remnants Modal`: Deep clean-slate remnant inspector with confidence badges and auto `.reg` backup.
   - `CVE Security Audit Modal`: Interactive vulnerability scanner (offline curated DB + optional OSV.dev feed).
-  - `AI Diagnostic Modal`: System health overview, privilege indicator, and recommended actions.
 
 | Keybinding | Action |
 | :--- | :--- |
@@ -126,7 +125,6 @@ uv run bcu gui
 | `[U]` | Open Bulk Uninstallation Manager for selected applications |
 | `[J]` | Open Clean Slate Remnant Manager |
 | `[V]` | Open CVE Vulnerability Audit modal |
-| `[D]` | Open AI Assistant Diagnostic Suite |
 | `[I]` | Toggle Inspector Sidebar |
 | `[S]` | Toggle Windows System / Protected applications |
 | `[R]` | Refresh system discovery |
@@ -200,11 +198,12 @@ uv run bcu export apps_backup.json --format json
 uv run bcu export large_apps.csv --format csv --query "Game"
 ```
 
-### 8. `bcu ai-helper`
-Provides system inventory summary, backup folder path, uninstaller health diagnostics, and actionable command guides formatted for AI assistants.
+### 8. `bcu summary`
+Displays a system software inventory summary (counts, uninstaller breakdown, backup directory, and largest apps).
 
 ```bash
-uv run bcu ai-helper --json
+uv run bcu summary
+uv run bcu summary --json
 ```
 
 ---

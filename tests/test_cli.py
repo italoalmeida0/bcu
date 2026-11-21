@@ -22,7 +22,7 @@ def test_cli_help():
     assert "list" in result.output
     assert "uninstall" in result.output
     assert "clean-junk" in result.output
-    assert "ai-helper" in result.output
+    assert "summary" in result.output
 
 
 def test_cli_list_json():
@@ -41,13 +41,13 @@ def test_cli_search_json():
     assert isinstance(data, list)
 
 
-def test_cli_ai_helper():
+def test_cli_summary_json():
     runner = CliRunner()
-    result = runner.invoke(main, ["ai-helper", "--json"])
+    result = runner.invoke(main, ["summary", "--json"])
     assert result.exit_code == 0
     data = json.loads(result.output)
     assert "total_installed_apps" in data
-    assert "guidance_for_ai" in data
+    assert "uninstaller_types_breakdown" in data
 
 
 def test_cli_export(tmp_path: Path):
@@ -95,8 +95,8 @@ def test_cli_parse_size_str():
     assert parse_size_str("invalid") is None
 
 
-def test_cli_ai_helper_no_json():
+def test_cli_summary_human():
     runner = CliRunner()
-    res = runner.invoke(main, ["ai-helper", "--no-json"])
+    res = runner.invoke(main, ["summary"])
     assert res.exit_code == 0
-    assert "total_installed_apps" in res.output
+    assert "Inventory Summary" in res.output

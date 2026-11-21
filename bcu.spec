@@ -8,7 +8,6 @@ hiddenimports = [
     'bcu.cli',
     'bcu.mcp_server',
     'bcu.tui.app',
-    'bcu.tui.screens.ai_diag_modal',
     'bcu.tui.screens.audit_modal',
     'bcu.tui.screens.junk_modal',
     'bcu.tui.screens.uninstall_modal',

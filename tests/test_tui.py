@@ -9,7 +9,6 @@ from textual.widgets import DataTable, Input
 
 from bcu.models import ApplicationEntry, UninstallerType
 from bcu.tui.app import BcuApp
-from bcu.tui.screens.ai_diag_modal import AiDiagModal
 from bcu.tui.screens.audit_modal import AuditModal
 from bcu.tui.screens.junk_modal import JunkModal
 from bcu.tui.screens.uninstall_modal import UninstallModal
@@ -131,8 +130,8 @@ async def test_tui_responsive_layout_and_modals(size, monkeypatch):
         assert cb.value is (not before_val)
         assert len(app.selected_ids) == 0
 
-        # Pressing 'd' in modal must NOT stack AiDiagModal on top
-        await pilot.press("d")
+        # Pressing 'v' in modal must NOT stack AuditModal on top
+        await pilot.press("v")
         await pilot.pause()
         assert len(app.screen_stack) == 2
 
@@ -141,7 +140,7 @@ async def test_tui_responsive_layout_and_modals(size, monkeypatch):
         await pilot.pause()
         assert len(app.screen_stack) == 1
 
-        # JunkModal, AuditModal, AiDiagModal geometry & non-overlap
+        # JunkModal & AuditModal geometry & non-overlap
         jm = JunkModal(target_apps=[], all_apps=apps)
         jm.scan_junk_task = lambda: None
         app.push_screen(jm)
@@ -156,13 +155,6 @@ async def test_tui_responsive_layout_and_modals(size, monkeypatch):
         app.push_screen(am)
         await pilot.pause()
         assert am.query_one("#audit-table").region.bottom <= am.query_one(".modal-buttons").region.y
-        await pilot.press("escape")
-        await pilot.pause()
-
-        dm = AiDiagModal(apps=apps)
-        app.push_screen(dm)
-        await pilot.pause()
-        assert dm.query_one(".diag-scroll").region.bottom <= dm.query_one(".modal-buttons").region.y
         await pilot.press("escape")
         await pilot.pause()
         assert len(app.screen_stack) == 1

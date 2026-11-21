@@ -433,12 +433,13 @@ def export_apps(output_file: str, export_format: str, query: Optional[str]):
     console.print(f"[bold green]Successfully exported {len(apps)} applications to '{output_file}'[/bold green]")
 
 
-@main.command(name="ai-helper")
-@click.option("--json/--no-json", "json_mode", default=True, help="Output JSON diagnosis and suggestions.")
-def ai_helper(json_mode: bool):
-    """AI Assistant integration tool: returns system inventory summary, stuck diagnostics, and actionable plan."""
+@main.command(name="summary")
+@click.option("--json", "json_mode", is_flag=True, help="Output inventory summary in JSON format.")
+def system_summary(json_mode: bool):
+    """Display a system software inventory summary (counts, uninstaller types, and largest apps)."""
     mgr = ScannerManager()
-    apps = mgr.scan_all()
+    with console.status("[bold cyan]Gathering system inventory summary...", spinner="dots") if not json_mode else nullcontext():
+        apps = mgr.scan_all()
 
     large_apps = sorted(apps, key=lambda a: a.estimated_size_bytes or 0, reverse=True)[:10]
     uninstaller_breakdown = {}
@@ -462,21 +463,24 @@ def ai_helper(json_mode: bool):
             }
             for a in large_apps
         ],
-        "guidance_for_ai": {
-            "to_search": "bcu search <keyword> --json",
-            "to_inspect": "bcu info <id_or_name> --json",
-            "to_audit_vulnerabilities": "bcu audit --json",
-            "to_deep_scan_remnants": "bcu scan-junk <id_or_name> --deep --json",
-            "to_dry_run_uninstall": "bcu uninstall <id> --dry-run --deep-junk --json",
-            "to_clean_slate_uninstall": "bcu uninstall <id> --quiet --yes --deep-junk --kill-running --json",
-            "to_clean_slate_remnants": "bcu clean-junk <id> --deep --min-confidence Good --kill-running --yes --json",
-        },
     }
 
     if json_mode:
         click.echo(to_json_output(summary))
     else:
-        console.print_json(data=summary)
+        from bcu.utils.formatting import format_size
+
+        console.print(f"\n[bold cyan]BCU System Inventory Summary[/bold cyan] (v{__version__})")
+        console.print(f" [bold]Total Installed Apps:[/bold] {summary['total_installed_apps']}")
+        console.print(f" [bold]Quiet Uninstall Ready:[/bold] {summary['quiet_uninstall_supported_apps']}")
+        console.print(f" [bold]Registry Backup Dir:[/bold]  {escape_markup(summary['backup_directory'])}")
+        console.print("\n[bold yellow]Top Largest Applications:[/bold yellow]")
+        for app in large_apps:
+            console.print(
+                f" - [bold white]{escape_markup(app.display_name_trimmed)}[/bold white] "
+                f"[green]{format_size(app.estimated_size_bytes)}[/green] [dim]({app.uninstaller_type.value})[/dim]"
+            )
+        console.print()
 
 
 @main.command(name="audit")

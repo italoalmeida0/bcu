@@ -26,7 +26,6 @@ from textual.widgets import (
 from bcu import __version__
 from bcu.models import ApplicationEntry, FilterCriteria, UninstallerType
 from bcu.scanners.manager import ScannerManager
-from bcu.tui.screens.ai_diag_modal import AiDiagModal
 from bcu.tui.screens.audit_modal import AuditModal
 from bcu.tui.screens.junk_modal import JunkModal
 from bcu.tui.screens.uninstall_modal import UninstallModal
@@ -254,7 +253,7 @@ HeaderStatsBanner {
 }
 
 /* Modals: properly centered on ModalScreen with flexible bodies and guaranteed visible footer buttons */
-UninstallModal, JunkModal, AiDiagModal, AuditModal {
+UninstallModal, JunkModal, AuditModal {
     align: center middle;
     background: rgba(0, 0, 0, 0.72);
 }
@@ -370,14 +369,6 @@ UninstallModal, JunkModal, AiDiagModal, AuditModal {
     height: 3;
 }
 
-.diag-scroll {
-    height: 1fr;
-    width: 100%;
-    background: #0d1117;
-    border: round #30363d;
-    padding: 1;
-}
-
 .audit-summary {
     height: auto;
     width: 100%;
@@ -400,7 +391,6 @@ class BcuApp(App):
         Binding("u", "uninstall_selected", "Uninstall"),
         Binding("j", "scan_junk", "Junk"),
         Binding("v", "open_audit", "CVE Audit"),
-        Binding("d", "open_ai_diag", "AI Diag"),
         Binding("i", "toggle_inspector", "Inspector"),
         Binding("s", "toggle_system_apps", "System"),
         Binding("slash", "focus_search", "Search"),
@@ -447,9 +437,9 @@ class BcuApp(App):
             yield Button("U Uninstall", variant="error", id="btn-uninstall-action", classes="btn-pill")
             yield Button("J Junk", variant="warning", id="btn-junk-action", classes="btn-pill")
             yield Button("V Audit", variant="success", id="btn-audit-action", classes="btn-pill")
-            yield Button("D AI Diag", variant="primary", id="btn-ai-action", classes="btn-pill")
             yield Button("S Sys:OFF", variant="default", id="btn-sys-toggle", classes="btn-pill")
             yield Button("I Panel", variant="default", id="btn-inspector-toggle", classes="btn-pill")
+            yield Button("R Refresh", variant="primary", id="btn-refresh-action", classes="btn-pill")
 
         yield Static("", id="status-bar", classes="hidden")
 
@@ -755,12 +745,6 @@ class BcuApp(App):
             return
         self.push_screen(AuditModal(apps=self.all_apps))
 
-    def action_open_ai_diag(self) -> None:
-        """Opens the AI Diagnostic Suite modal."""
-        if self._modal_open():
-            return
-        self.push_screen(AiDiagModal(apps=self.all_apps))
-
     def action_refresh_apps(self) -> None:
         """Forces a fresh discovery across all system sources."""
         if self._modal_open():
@@ -779,9 +763,9 @@ class BcuApp(App):
     def on_audit_button(self) -> None:
         self.action_open_audit()
 
-    @on(Button.Pressed, "#btn-ai-action")
-    def on_ai_button(self) -> None:
-        self.action_open_ai_diag()
+    @on(Button.Pressed, "#btn-refresh-action")
+    def on_refresh_button(self) -> None:
+        self.action_refresh_apps()
 
     @on(Button.Pressed, "#btn-sys-toggle")
     def on_sys_toggle_button(self) -> None:
